@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import shutil
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -18,6 +19,18 @@ load_dotenv()
 
 # -------------- configuration -----------------
 MAX_PROMPT_CHARS = 3500  # first N chars of document text sent to the LLM
+
+# Directory structure
+RAW_DIR = Path.home() / "Downloads" / "raw"
+INVOICES_DIR = Path.home() / "Downloads" / "invoices"
+PROCESSED_DIR = Path.home() / "Downloads" / "processed"
+
+def ensure_directories():
+    """Create the required directories if they don't exist."""
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
 # ---------- LLM function schema ---------------
 FUNCTION_SPEC = {
     "name": "extract_invoice_fields",
@@ -25,12 +38,12 @@ FUNCTION_SPEC = {
     "parameters": {
         "type": "object",
         "properties": {
-            "date":  {"type": "string", "description": "Date of the transaction in YYYY-MM-DD."},
-            "method":{"type": "string", "description": "Payment method, e.g. visa, mastercard, sepa, cash."},
-            "amount":{"type": "string", "description": "Total amount in the invoice, e.g. 123.45 EUR."},
-            "usage": {"type": "string", "description": "Short lower_snake_case label describing purpose/vendor."}
+            "date":  {"type": "string", "description": "Date of the transaction in YYYY-MM-DD format."},
+            "method":{"type": "string", "description": "Payment method. For PayPal extract the FULL email address (e.g. 'quantengoo@gmail.com'). For others use: visa, mastercard, sepa, cash."},
+            "amount":{"type": "string", "description": "Total amount in the invoice including currency (e.g. 123.45 EUR, 50.00 USD)."},
+            "purpose": {"type": "string", "description": "Description with company name if available, followed by short purpose (max 8 chars). Examples: 'vercel_hosting', 'openai_api', 'amazon_books'."}
         },
-        "required": ["date", "method", "amount", "usage"]
+        "required": ["date", "method", "amount", "purpose"]
     },
 }
 
@@ -54,7 +67,7 @@ def call_llm(prompt: str) -> Optional[Dict[str, str]]:
     try:
         client = OpenAI()
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are an accurate bookkeeping assistant."},
                 {"role": "user", "content": prompt}
@@ -74,23 +87,45 @@ def call_llm(prompt: str) -> Optional[Dict[str, str]]:
         return None
 
 def normalise(fields: Dict[str, str]) -> Dict[str, str]:
+    # Convert date from YYYY-MM-DD to YY-MM-DD
     date = fields["date"]
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         raise ValueError(f"Bad date: {date}")
+    year, month, day = date.split("-")
+    date = f"{year[-2:]}-{month}-{day}"  # Convert to YY-MM-DD
 
-    method = re.sub(r"[^a-z]", "", fields["method"].lower())
+    # Handle payment method, special case for PayPal
+    method = fields["method"].lower().strip()
+    if "@" in method:  # PayPal email address
+        # Extract everything before the @ and clean it
+        email_user = method.split("@")[0].strip()
+        method = f"paypal_{email_user}"
+    else:
+        method = re.sub(r"[^a-z]", "", method)
 
+    # Format amount
     amount = fields["amount"].upper().replace(",", ".").strip()
     amount = re.sub(r"\s+", "", amount)  # e.g. 123.45EUR
 
-    usage = re.sub(r"[^a-z0-9_]", "_", fields["usage"].lower())
-    usage = re.sub(r"_+", "_", usage).strip("_")[:30]
+    # Format purpose: company_shortpurpose (max 8 chars for short purpose)
+    purpose = fields["purpose"].lower().strip()
+    parts = purpose.split("_", 1)  # Split into company and rest
+    if len(parts) > 1:
+        company, rest = parts
+        rest = rest[:8]  # Limit rest to 8 chars
+        purpose = f"{company}_{rest}"
+    else:
+        purpose = purpose[:8]  # If no company, limit whole purpose to 8 chars
+    
+    # Clean up purpose
+    purpose = re.sub(r"[^a-z0-9_]", "_", purpose)
+    purpose = re.sub(r"_+", "_", purpose).strip("_")
 
-    return {"date": date, "method": method, "amount": amount, "usage": usage}
+    return {"date": date, "method": method, "amount": amount, "purpose": purpose}
 
 def build_filename(meta: Dict[str, str], original_suffix: str) -> str:
     date = meta["date"].replace("-", ".")
-    return f"{date}_{meta['method']}_{meta['amount']}_{meta['usage']}{original_suffix}"
+    return f"{date}_{meta['method']}_{meta['amount']}_{meta['purpose']}{original_suffix}"
 
 def process_file(path: Path, dry_run: bool=False, log_handle=None):
     text = get_text_from_file(path)[:MAX_PROMPT_CHARS]
@@ -105,35 +140,58 @@ def process_file(path: Path, dry_run: bool=False, log_handle=None):
     except ValueError as e:
         print(f"⚠️  Validation error for {path.name}: {e}")
         return
+
     new_name = build_filename(meta, path.suffix.lower())
-    new_path = path.with_name(new_name)
+    new_path = INVOICES_DIR / new_name
+    processed_path = PROCESSED_DIR / path.name
+
     if new_path.exists():
-        print(f"⚠️  {new_name} already exists; skipping")
+        print(f"⚠️  {new_name} already exists in invoices directory; skipping")
         return
+    if processed_path.exists():
+        print(f"⚠️  {path.name} already exists in processed directory; skipping")
+        return
+
     if dry_run:
-        print(f"[DRY] {path.name}  ->  {new_name}")
+        print(f"[DRY] Would copy {path.name} -> {new_path}")
+        print(f"[DRY] Would move {path.name} -> {processed_path}")
     else:
-        path.rename(new_path)
-        print(f"✓ {path.name}  ->  {new_name}")
+        try:
+            # First copy to invoices directory with new name
+            shutil.copy2(path, new_path)
+            # Then move original to processed directory
+            shutil.move(path, processed_path)
+            print(f"✓ Created {new_path.name}")
+            print(f"✓ Moved original to {processed_path.name}")
+        except Exception as e:
+            print(f"⚠️  Error processing {path.name}: {e}")
+            # Cleanup if needed
+            if new_path.exists():
+                new_path.unlink()
+            return
+
     if log_handle:
         log_handle.write(json.dumps({
-            "old": str(path),
-            "new": str(new_path),
+            "original": str(path),
+            "renamed": str(new_path),
+            "processed": str(processed_path),
             "fields": meta
         }) + "\n")
 
 def main():
     parser = argparse.ArgumentParser(description="Batch‑rename invoice files using OpenAI LLM.")
-    parser.add_argument("folder", type=Path, help="Folder containing invoices")
-    parser.add_argument("--dry-run", action="store_true", help="Preview renames without changing files")
+    parser.add_argument("--dry-run", action="store_true", help="Preview changes without modifying files")
     parser.add_argument("--log", type=argparse.FileType("a"), help="Append JSONL log to this file")
     args = parser.parse_args()
 
-    if not args.folder.is_dir():
-        print("Error: folder must be a directory", file=sys.stderr)
+    # Ensure all required directories exist
+    ensure_directories()
+
+    if not RAW_DIR.exists() or not RAW_DIR.is_dir():
+        print(f"Error: Raw directory {RAW_DIR} must exist and be a directory", file=sys.stderr)
         sys.exit(1)
 
-    for path in sorted(args.folder.iterdir()):
+    for path in sorted(RAW_DIR.iterdir()):
         if path.name.startswith(".") or path.is_dir():
             continue
         if path.suffix.lower() not in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
