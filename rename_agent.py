@@ -1,12 +1,3 @@
-"""rename_agent.py
-Simple CLI tool to batch‑rename invoices using an LLM (OpenAI) for field extraction.
-
-Usage:
-    python rename_agent.py /path/to/folder [--dry-run]
-
-Environment:
-    OPENAI_API_KEY   – your OpenAI key (sk or gpt‑via‑proxy)
-"""
 from __future__ import annotations
 import argparse
 import json
@@ -16,10 +7,14 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-import openai
+from dotenv import load_dotenv
+from openai import OpenAI
 from pdfminer.high_level import extract_text
 from PIL import Image
 import pytesseract
+
+# Load environment variables from .env file
+load_dotenv()
 
 # -------------- configuration -----------------
 MAX_PROMPT_CHARS = 3500  # first N chars of document text sent to the LLM
@@ -57,20 +52,25 @@ def get_text_from_file(path: Path) -> str:
 
 def call_llm(prompt: str) -> Optional[Dict[str, str]]:
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are an accurate bookkeeping assistant."},
                 {"role": "user", "content": prompt}
             ],
-            functions=[FUNCTION_SPEC],
-            function_call={"name": "extract_invoice_fields"},
+            tools=[{
+                "type": "function",
+                "function": FUNCTION_SPEC
+            }],
+            tool_choice={"type": "function", "function": {"name": "extract_invoice_fields"}},
             temperature=0.0,
         )
-        arguments = response.choices[0].message["function_call"]["arguments"]
-        return json.loads(arguments)
+        tool_call = response.choices[0].message.tool_calls[0]
+        return json.loads(tool_call.function.arguments)
     except Exception as e:
-        print(f"⚠️  LLM extraction failed: {e}", file=sys.stderr)
+        print(f"⚠️  LLM extraction failed: {str(e)}", file=sys.stderr)
+        print(f"Debug info - API key format: {'sk-...' if os.getenv('OPENAI_API_KEY', '').startswith('sk-') else 'invalid'}", file=sys.stderr)
         return None
 
 def normalise(fields: Dict[str, str]) -> Dict[str, str]:

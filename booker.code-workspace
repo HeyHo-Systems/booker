@@ -5,6 +5,21 @@
 		}
 	],
 	"settings": {
-		"postman.settings.dotenv-detection-notification-visibility": false
+		"postman.settings.dotenv-detection-notification-visibility": false,
+		"search.exclude": {
+			"venv/**": true,
+			"env/**": true,
+			"**/__pycache__": true,
+			"**/*.py[cod]": true,
+			"**/*$py.class": true,
+			"dist/**": true,
+			"build/**": true,
+			"**/*.egg-info": true,
+			".idea/**": true,
+			".vscode/**": true,
+			".pytest_cache/**": true,
+			"htmlcov/**": true,
+			"test_invoices/**": true
+		}
 	}
 }

@@ -1,0 +1,28 @@
+# Python virtual environment
+venv/
+env/
+.env
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project specific
+test_invoices/ 

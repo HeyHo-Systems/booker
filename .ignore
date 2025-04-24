@@ -1,0 +1,30 @@
+# Python virtual environment
+venv/**/*
+env/**/*
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project specific
+test_invoices/
+
+# Ignore all dot files except .gitignore and .ignore
+.*
+!.gitignore
+!.ignore 
