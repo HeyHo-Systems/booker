@@ -39,7 +39,7 @@ FUNCTION_SPEC = {
         "type": "object",
         "properties": {
             "date":  {"type": "string", "description": "Date of the transaction in YYYY-MM-DD format."},
-            "method":{"type": "string", "description": "Payment method. For PayPal extract the FULL email address (e.g. 'quantengoo@gmail.com'). For others use: visa, mastercard, sepa, cash."},
+            "method":{"type": "string", "description": "Payment method with details. For PayPal extract the FULL email address (e.g. 'quantengoo@gmail.com'). For credit cards or bank transfers include the last 4 digits (e.g. 'visa 1234', 'mastercard 5678', 'sepa DE89'). If no digits available use: visa, mastercard, sepa, cash. If method cannot be determined, use 'unknown'."},
             "amount":{"type": "string", "description": "Total amount in the invoice including currency (e.g. 123.45 EUR, 50.00 USD)."},
             "purpose": {"type": "string", "description": "Description with company name if available, followed by short purpose (max 8 chars). Examples: 'vercel_hosting', 'openai_api', 'amazon_books'."}
         },
@@ -67,7 +67,7 @@ def call_llm(prompt: str) -> Optional[Dict[str, str]]:
     try:
         client = OpenAI()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are an accurate bookkeeping assistant."},
                 {"role": "user", "content": prompt}
@@ -94,14 +94,37 @@ def normalise(fields: Dict[str, str]) -> Dict[str, str]:
     year, month, day = date.split("-")
     date = f"{year[-2:]}-{month}-{day}"  # Convert to YY-MM-DD
 
-    # Handle payment method, special case for PayPal
+    # Handle payment method
     method = fields["method"].lower().strip()
-    if "@" in method:  # PayPal email address
+    if not method:  # Empty or None
+        method = "unknown"
+    elif "@" in method:  # PayPal email address
         # Extract everything before the @ and clean it
         email_user = method.split("@")[0].strip()
+        # Remove 'paypal' prefix if it exists in the email username
+        email_user = re.sub(r'^paypal[_\s-]*', '', email_user)
         method = f"paypal_{email_user}"
     else:
-        method = re.sub(r"[^a-z]", "", method)
+        # Extract any 4-digit sequence that might be card/account numbers
+        digits_match = re.search(r'[0-9x]{4,}', method)
+        last_four = None
+        if digits_match:
+            digits = digits_match.group()
+            last_four = digits[-4:]  # Get last 4 digits
+            if 'x' not in last_four and last_four.isdigit():  # Only use if they're actual digits
+                # Remove all non-letters from the method name
+                base_method = re.sub(r'[^a-z]', '', method.split()[0])
+                if base_method:
+                    method = f"{base_method}_{last_four}"
+                else:
+                    method = "unknown"
+            else:
+                last_four = None
+                
+        if not last_four:  # If no valid digits found
+            # Remove all non-letters and use base method
+            cleaned_method = re.sub(r'[^a-z]', '', method)
+            method = cleaned_method if cleaned_method else "unknown"
 
     # Format amount
     amount = fields["amount"].upper().replace(",", ".").strip()
@@ -154,7 +177,6 @@ def process_file(path: Path, dry_run: bool=False, log_handle=None):
 
     if dry_run:
         print(f"[DRY] Would copy {path.name} -> {new_path}")
-        print(f"[DRY] Would move {path.name} -> {processed_path}")
     else:
         try:
             # First copy to invoices directory with new name

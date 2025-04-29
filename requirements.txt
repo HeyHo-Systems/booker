@@ -1,5 +1,6 @@
-openai>=1.0.0
-pdfminer.six>=20221105
-Pillow>=10.0.0
-pytesseract>=0.3.10
-python-dotenv>=1.0.0 
+easyocr==1.7.2
+python-dotenv==1.1.0
+openai==1.76.0
+pdfminer.six==20250416
+Pillow==11.2.1
+pytesseract>=0.3.10 
