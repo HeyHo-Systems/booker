@@ -7,15 +7,20 @@ import sys
 import shutil
 from pathlib import Path
 from typing import Dict, Optional
+import tempfile
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from pdfminer.high_level import extract_text
 from PIL import Image
-import pytesseract
+import easyocr
+from pdf2image import convert_from_path
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Initialize EasyOCR reader (done once for efficiency)
+reader = easyocr.Reader(['en', 'de'])  # Support for English and German
 
 # -------------- configuration -----------------
 MAX_PROMPT_CHARS = 3500  # first N chars of document text sent to the LLM
@@ -53,14 +58,39 @@ def get_text_from_file(path: Path) -> str:
     suffix = path.suffix.lower()
     try:
         if suffix == ".pdf":
-            return extract_text(str(path))
+            # Try pdfminer first
+            text = extract_text(str(path))
+            if not text.strip():
+                print(f"⚠️  PDFMiner extracted no text from {path.name}, trying EasyOCR as fallback...")
+                # Convert PDF to images
+                try:
+                    # Convert first page of PDF to image
+                    images = convert_from_path(str(path), first_page=1, last_page=1)
+                    if images:
+                        # Save image temporarily
+                        with tempfile.NamedTemporaryFile(suffix='.png') as tmp:
+                            images[0].save(tmp.name)
+                            # Try OCR on the image
+                            results = reader.readtext(tmp.name)
+                            text = "\n".join(text for _, text, _ in results)
+                            if text.strip():
+                                print(f"✓ EasyOCR successfully extracted text from {path.name}")
+                            return text
+                except Exception as e:
+                    print(f"⚠️  PDF conversion failed for {path.name}: {str(e)}", file=sys.stderr)
+            return text
         elif suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
-            img = Image.open(path)
-            return pytesseract.image_to_string(img)
+            # EasyOCR returns list of (bbox, text, confidence) tuples
+            results = reader.readtext(str(path))
+            text = "\n".join(text for _, text, _ in results)
+            if not text.strip():
+                print(f"⚠️  EasyOCR found no text in {path.name}")
+            return text
         else:
             raise ValueError(f"Unsupported file type: {suffix}")
     except Exception as e:
-        print(f"⚠️  Failed to extract text from {path.name}: {e}", file=sys.stderr)
+        print(f"⚠️  Failed to extract text from {path.name}: {str(e)}", file=sys.stderr)
+        print(f"⚠️  Error type: {type(e).__name__}", file=sys.stderr)
         return ""
 
 def call_llm(prompt: str) -> Optional[Dict[str, str]]:
