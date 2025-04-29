@@ -27,13 +27,15 @@ MAX_PROMPT_CHARS = 3500  # first N chars of document text sent to the LLM
 
 # Directory structure
 RAW_DIR = Path.home() / "Downloads" / "raw"
-INVOICES_DIR = Path.home() / "Downloads" / "invoices"
+CREDITCARD_DIR = Path.home() / "Downloads" / "creditcard"
+GIRO_DIR = Path.home() / "Downloads" / "giro"
 PROCESSED_DIR = Path.home() / "Downloads" / "processed"
 
 def ensure_directories():
     """Create the required directories if they don't exist."""
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+    CREDITCARD_DIR.mkdir(parents=True, exist_ok=True)
+    GIRO_DIR.mkdir(parents=True, exist_ok=True)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- LLM function schema ---------------
@@ -195,26 +197,46 @@ def process_file(path: Path, dry_run: bool=False, log_handle=None):
         return
 
     new_name = build_filename(meta, path.suffix.lower())
-    new_path = INVOICES_DIR / new_name
+    
+    # Determine target directory based on payment method
+    method = meta['method'].lower()
+    if any(m in method for m in ['visa', 'card', 'creditcard', 'unknown', 'mastercard']):
+        target_dir = CREDITCARD_DIR
+    else:
+        target_dir = GIRO_DIR
+    
+    new_path = target_dir / new_name
     processed_path = PROCESSED_DIR / path.name
 
-    if new_path.exists():
-        print(f"⚠️  {new_name} already exists in invoices directory; skipping")
-        return
-    if processed_path.exists():
-        print(f"⚠️  {path.name} already exists in processed directory; skipping")
-        return
+    # Handle duplicates by marking them and only moving to processed
+    is_duplicate = new_path.exists()
+    if is_duplicate:
+        # Just move to processed with 'duplicate' marker
+        processed_path = PROCESSED_DIR / f"duplicate_{path.name}"
+        if processed_path.exists():
+            print(f"⚠️  {processed_path.name} already exists in processed directory; skipping")
+            return
+        if not dry_run:
+            try:
+                shutil.move(path, processed_path)
+                print(f"✓ Moved duplicate to {processed_path}")
+            except Exception as e:
+                print(f"⚠️  Error moving duplicate {path.name}: {e}")
+            return
+        else:
+            print(f"[DRY] Would move duplicate {path.name} -> {processed_path}")
+            return
 
     if dry_run:
         print(f"[DRY] Would copy {path.name} -> {new_path}")
     else:
         try:
-            # First copy to invoices directory with new name
+            # First copy to target directory with new name
             shutil.copy2(path, new_path)
             # Then move original to processed directory
             shutil.move(path, processed_path)
-            print(f"✓ Created {new_path.name}")
-            print(f"✓ Moved original to {processed_path.name}")
+            print(f"✓ Created {target_dir.name}/{new_path.name}")
+            print(f"✓ Moved original to processed/{processed_path.name}")
         except Exception as e:
             print(f"⚠️  Error processing {path.name}: {e}")
             # Cleanup if needed
@@ -227,6 +249,8 @@ def process_file(path: Path, dry_run: bool=False, log_handle=None):
             "original": str(path),
             "renamed": str(new_path),
             "processed": str(processed_path),
+            "is_duplicate": is_duplicate,
+            "target_dir": target_dir.name,
             "fields": meta
         }) + "\n")
 
