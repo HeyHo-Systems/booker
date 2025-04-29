@@ -1,6 +1,6 @@
-# Rename-my-Invoices (v0.1)
+# Rename-my-Invoices (v0.2)
 
-A single-file Python utility that scans a folder of PDFs / image receipts, asks an OpenAI model for four bookkeeping fields, and renames each file to `YYYY.MM.DD_method_amount_usage.ext`.
+A Python utility that processes invoices and receipts (PDF/images), extracts key information using OCR and LLM, and organizes them into categorized folders with standardized names.
 
 ## 1. Install
 
@@ -12,12 +12,12 @@ source .venv/bin/activate
 
 Install dependencies:
 ```bash
-pip install openai pdfminer.six pytesseract pillow rich
+pip install -r requirements.txt
 ```
 
 System dependencies:
-- macOS: `brew install tesseract`
-- Ubuntu: `sudo apt-get install tesseract-ocr`
+- macOS: `brew install poppler`
+- Ubuntu: `sudo apt-get install poppler-utils`
 
 ## 2. Configure
 
@@ -27,60 +27,90 @@ export OPENAI_API_KEY="sk-…"
 ```
 You can also point the `OPENAI_API_BASE` / `OPENAI_API_KEY` variables to your compatible proxy.
 
-Note: Inside `rename_agent.py` the model defaults to `gpt-4o-mini`; change `model=` if you prefer another chat model or a local endpoint.
+## 3. Directory Structure
 
-## 3. Run
+The script uses the following directory structure in your Downloads folder:
+- `raw/` - Place your unprocessed invoices/receipts here
+- `creditcard/` - Processed files paid with credit cards (Visa, Mastercard, etc.)
+- `giro/` - Processed files paid with other methods (PayPal, SEPA, etc.)
+- `processed/` - Original files after processing (including duplicates)
+
+## 4. File Naming Convention
+
+Processed files are renamed using this format:
+```
+YY.MM.DD_method_amount_purpose.ext
+```
+
+Examples:
+- `25.04.14_visa_9174_20.00USD_twilio_api.pdf`
+- `25.04.08_sepa_513.00EUR_finn_car.pdf`
+- `25.04.13_paypal_2.99EUR_apple_icloud.png`
+
+Components:
+- Date: YY.MM.DD format
+- Payment method: visa, mastercard, paypal, sepa, etc.
+  - For credit cards: includes last 4 digits if available
+  - For PayPal: includes email if available
+- Amount: includes currency (EUR, USD, etc.)
+- Purpose: company_purpose format (max 8 chars for purpose)
+
+## 5. Usage
 
 Try a dry run first:
 ```bash
-python rename_agent.py ~/invoices --dry-run
+python rename_agent.py --dry-run
 ```
 
-If the output looks good, commit:
+If the output looks good, process the files:
 ```bash
-python rename_agent.py ~/invoices
+python rename_agent.py
 ```
 
 ### Options
 
 | Flag | Effect |
 |------|--------|
-| `--dry-run` | Print the proposed new names but don't rename anything |
-| `--log rename_log.jsonl` | Append one JSON line per file (old, new, fields) for traceability |
+| `--dry-run` | Preview the proposed changes without modifying anything |
+| `--log rename_log.jsonl` | Append detailed JSON logs for each processed file |
 
-Note: The script ignores hidden files, sub-directories, and non-PDF/image extensions.
+## 6. How it works
 
-## 4. How it works (quick tour)
+1. **Text Extraction**
+   - PDF text → `pdfminer.six`
+   - If no text found → Convert to image with `pdf2image`
+   - Image OCR → `easyocr` (supports English and German)
 
-1. **Extract text**
-   - PDF → `pdfminer.six.extract_text()`
-   - Image → `pytesseract.image_to_string()`
+2. **LLM Processing**
+   - Sends extracted text to GPT-4
+   - Extracts date, payment method, amount, and purpose
+   - Normalizes fields for consistent naming
 
-2. **LLM call**
-   - Sends the first 3,500 chars to Chat Completions with a function schema:
-   ```json
-   {
-     "date": "YYYY-MM-DD",
-     "method": "visa",
-     "amount": "123.45 EUR",
-     "usage": "fuel"
-   }
-   ```
+3. **File Organization**
+   - Sorts into creditcard/ or giro/ based on payment method
+   - Moves original to processed/
+   - Handles duplicates by adding "duplicate_" prefix
 
-3. **Validation & normalisation**
-   - Basic regex checks
-   - Normalises amounts (123.45EUR → 123.45 EUR)
-   - Usage to snake_case ≤ 30 chars
+### Payment Method Sorting
 
-4. **Rename**
-   - Builds `YYYY.MM.DD_method_amount_usage.ext` (dots in date, original extension preserved)
-   - Calls `Path.rename()`
+Files are sorted based on the payment method:
 
-## 5. Next steps
+**creditcard/** folder:
+- Visa payments
+- Mastercard payments
+- Generic card payments
+- Unknown payment methods
 
-- Watch mode – add watchdog to trigger on new files
-- Better OCR – swap in Unstructured-IO or PaddleOCR for scans
-- Bulk / async – wrap the extraction in `asyncio.gather()` or a LangChain Runnable for speed
-- Undo UI – small Streamlit page that loads the JSONL log and lets you revert
+**giro/** folder:
+- PayPal payments
+- SEPA transfers
+- All other payment methods
 
-Happy hacking!
+## 7. Duplicate Handling
+
+When a file would create a duplicate in the target directory:
+- Original stays in place
+- New file is moved to processed/ with "duplicate_" prefix
+- Both actions are logged
+
+Happy organizing!
