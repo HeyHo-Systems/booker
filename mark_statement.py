@@ -4,14 +4,20 @@ mark_statement.py
 CLI tool that scans a credit‑card statement PDF (German Hanseatic layout),
 matches each transaction line against a folder of *renamed* invoice files
 (created by rename_agent.py). This script identifies matching transactions
-but no longer creates an annotated PDF (that functionality has been removed).
+and generates a report.
 
 Usage
 -----
 python mark_statement.py --statement path/to/Statement.pdf \
                          --invoices  path/to/renamed_folder \
-                         --out       path/to/output_file.json \
                          [--dry-run] [--fx-cache fx.json] [--debug]
+
+Outputs
+-------
+- A JSON file with detailed matching data (Statement_results.json)
+- A markdown report with tables of matches and unmatched items (Statement_report.md)
+
+Both files are saved in the same directory as the input statement.
 
 Dependencies
 ------------
@@ -25,11 +31,12 @@ import json
 import os
 import re
 import sys
+import warnings
 from collections import defaultdict
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 
 import numpy as np
 import pdfplumber
@@ -305,7 +312,12 @@ def normalize_merchant_name(name: str) -> str:
         'gas': 'fuel',
         'tankstelle': 'fuel',
         'station': 'fuel',
-        'fuel': 'fuel'
+        'fuel': 'fuel', 
+        'shell': 'fuel',
+        'bp': 'fuel',
+        'aral': 'fuel',
+        'esso': 'fuel',
+        'total': 'fuel'
     }
     
     words = name.split()
@@ -329,6 +341,10 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     Compare amounts with FX rate tolerance
     Returns a score between 0 and 1
     """
+    # Check for exact match first with a slight tolerance for rounding
+    if abs(stmt_amount - inv_amount) < Decimal('0.10') and inv_currency == 'EUR':
+        return 1.0
+        
     if inv_currency != 'EUR':
         # Allow for FX rate variations of ±10%
         base_rate = fx_rate
@@ -431,11 +447,11 @@ def match_rows(
             
             # Adjust weights based on similarity and perfect matches
             if perfect_match:  # Perfect date and amount - be more lenient on name
-                heuristic = 0.4 * sim + 0.3 * amt_score + 0.3 * date_score + 0.2  # Bonus for perfect match
+                heuristic = 0.3 * sim + 0.5 * amt_score + 0.2 * date_score + 0.2  # Bonus for perfect match
             elif sim > 0.6:  # High name similarity - be more lenient on other factors
-                heuristic = 0.7 * sim + 0.15 * amt_score + 0.15 * date_score
-            else:  # Normal weighting
-                heuristic = 0.5 * sim + 0.3 * amt_score + 0.2 * date_score
+                heuristic = 0.6 * sim + 0.25 * amt_score + 0.15 * date_score
+            else:  # Normal weighting with more weight on amount
+                heuristic = 0.4 * sim + 0.4 * amt_score + 0.2 * date_score
 
             if debug:
                 print(f"   → Candidate {inv['path'].name:<40} "
@@ -478,25 +494,206 @@ def match_rows(
     return matches
 
 
+def generate_markdown_report(
+    stmt_rows: List[Dict],
+    inv_rows: List[Dict],
+    matches: Dict[int, int],
+    output_path: Path
+) -> None:
+    """Generate a markdown report with matches overview and tables."""
+    
+    # Calculate stats and unmatched items
+    matched_stmt_indices = set(int(k) for k in matches.keys())
+    matched_inv_indices = set(int(v) for v in matches.values())
+    
+    unmatched_stmt_indices = set(range(len(stmt_rows))) - matched_stmt_indices
+    unmatched_inv_indices = set(range(len(inv_rows))) - matched_inv_indices
+    
+    # Start building the markdown content
+    lines = [
+        "# Statement Matching Report\n",
+        f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+        "## Overview\n",
+        f"- Total statement rows: {len(stmt_rows)}",
+        f"- Total invoice files: {len(inv_rows)}",
+        f"- Matched pairs: {len(matches)}",
+        f"- Unmatched statement rows: {len(unmatched_stmt_indices)}",
+        f"- Unmatched invoice files: {len(unmatched_inv_indices)}\n",
+        "## Matched Pairs\n",
+        "| Statement Date | Description | Amount (EUR) | Invoice File |",
+        "|---------------|-------------|--------------|--------------|"
+    ]
+    
+    # Add matched pairs
+    for stmt_idx, inv_idx in matches.items():
+        stmt = stmt_rows[stmt_idx]
+        inv = inv_rows[inv_idx]
+        lines.append(
+            f"| {stmt['trans_dt'].strftime('%Y-%m-%d')} "
+            f"| {stmt['descr'][:50]} "
+            f"| {stmt['eur']} "
+            f"| {Path(inv['path']).name} |"
+        )
+    
+    # Add unmatched statement rows section
+    lines.extend([
+        "\n## Unmatched Statement Rows\n",
+        "| Date | Description | Amount (EUR) |",
+        "|------|-------------|--------------|"
+    ])
+    
+    for idx in sorted(unmatched_stmt_indices):
+        stmt = stmt_rows[idx]
+        lines.append(
+            f"| {stmt['trans_dt'].strftime('%Y-%m-%d')} "
+            f"| {stmt['descr'][:50]} "
+            f"| {stmt['eur']} |"
+        )
+    
+    # Add unmatched invoice files section
+    lines.extend([
+        "\n## Unmatched Invoice Files\n",
+        "| Date | Amount | Currency | Filename |",
+        "|------|---------|----------|-----------|"
+    ])
+    
+    for idx in sorted(unmatched_inv_indices):
+        inv = inv_rows[idx]
+        lines.append(
+            f"| {inv['date'].strftime('%Y-%m-%d')} "
+            f"| {inv['amount']} "
+            f"| {inv['ccy']} "
+            f"| {Path(inv['path']).name} |"
+        )
+    
+    # Write the report
+    output_path.write_text('\n'.join(lines))
+    print(f"📝 Generated markdown report at {output_path}")
+
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 def main():
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Mark statement rows with matching invoices.")
-    parser.add_argument("--statement", type=Path, required=True)
-    parser.add_argument("--invoices", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    parser = argparse.ArgumentParser(description="Match statement rows with invoices.")
+    
+    # Add test mode argument first to check it early
+    parser.add_argument("--test", action="store_true", help="Test report generation with dummy data")
+    
+    # Make these arguments not required if in test mode
+    parser.add_argument("--statement", type=Path, required=False, help="Path to statement PDF")
+    parser.add_argument("--invoices", type=Path, required=False, help="Path to invoices directory")
+    parser.add_argument("--out", type=Path, required=False, help="Path for JSON output (optional, defaults to statement_name_results.json)")
+    parser.add_argument("--report", type=Path, required=False, help="Path for markdown report output (optional, defaults to statement_name_report.md)")
     parser.add_argument("--fx-cache", type=Path, default=Path(".fx_rates.json"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--threshold", type=float, default=0.6)
     parser.add_argument("--debug", action="store_true", help="Verbose matching output")
     args = parser.parse_args()
 
+    if args.test:
+        # For test mode, require the out path
+        if not args.out:
+            args.out = Path("test_results.json")
+        if not args.report:
+            args.report = Path("test_report.md")
+            
+        # Generate test data
+        print("🧪 Testing report generation with dummy data...")
+        test_stmt_rows = [
+            {
+                "page": 0,
+                "book_dt": date(2025, 4, 1),
+                "trans_dt": date(2025, 4, 1),
+                "descr": "Test transaction 1",
+                "eur": Decimal("123.45")
+            },
+            {
+                "page": 0,
+                "book_dt": date(2025, 4, 2),
+                "trans_dt": date(2025, 4, 2),
+                "descr": "Test transaction 2",
+                "eur": Decimal("67.89")
+            }
+        ]
+        test_inv_rows = [
+            {
+                "path": Path("test1.pdf"),
+                "date": date(2025, 4, 1),
+                "amount": Decimal("123.45"),
+                "ccy": "EUR",
+                "slug": "test1"
+            },
+            {
+                "path": Path("test2.pdf"),
+                "date": date(2025, 4, 3),
+                "amount": Decimal("99.99"),
+                "ccy": "USD",
+                "slug": "test2"
+            }
+        ]
+        test_matches = {0: 0}  # Match first statement to first invoice
+        
+        # Test JSON serialization
+        results = {
+            "matches": {},
+            "statement_rows": [],
+            "invoice_rows": []
+        }
+        
+        # Process statement rows
+        for idx, row in enumerate(test_stmt_rows):
+            clean_row = {k: v for k, v in row.items() if k != "vec"}
+            if "book_dt" in clean_row and clean_row["book_dt"]:
+                clean_row["book_dt"] = clean_row["book_dt"].isoformat()
+            if "trans_dt" in clean_row and clean_row["trans_dt"]:
+                clean_row["trans_dt"] = clean_row["trans_dt"].isoformat()
+            if "eur" in clean_row:
+                clean_row["eur"] = str(clean_row["eur"])
+            results["statement_rows"].append(clean_row)
+            
+        # Process invoice rows
+        for idx, row in enumerate(test_inv_rows):
+            clean_row = {k: v for k, v in row.items() if k != "vec"}
+            if "path" in clean_row:
+                clean_row["path"] = str(clean_row["path"])
+            if "date" in clean_row and clean_row["date"]:
+                clean_row["date"] = clean_row["date"].isoformat()
+            if "amount" in clean_row:
+                clean_row["amount"] = str(clean_row["amount"])
+            results["invoice_rows"].append(clean_row)
+        
+        # Convert match indices to strings
+        for s_idx, i_idx in test_matches.items():
+            results["matches"][str(s_idx)] = int(i_idx)  # Convert numpy types to Python native types
+            
+        with open(args.out, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"✅ Saved test results to {args.out}")
+        
+        generate_markdown_report(test_stmt_rows, test_inv_rows, test_matches, args.report)
+        return
+
+    # In non-test mode, validate required arguments
+    if not args.statement:
+        sys.exit("--statement is required when not in test mode")
+    if not args.invoices:
+        sys.exit("--invoices is required when not in test mode")
     if not args.statement.exists():
         sys.exit("Statement PDF not found.")
     if not args.invoices.exists():
         sys.exit("Invoices folder not found.")
+        
+    # Automatically generate output filenames based on statement name
+    statement_stem = args.statement.stem  # Gets filename without extension
+    statement_dir = args.statement.parent
+    
+    if not args.out:
+        args.out = statement_dir / f"{statement_stem}_results.json"
+    
+    if not args.report:
+        args.report = statement_dir / f"{statement_stem}_report.md"
 
     print("📄 Extracting statement rows …")
     stmt_rows = extract_statement_rows(args.statement)
@@ -513,55 +710,49 @@ def main():
     matches = match_rows(stmt_rows, inv_rows, args.fx_cache, threshold=args.threshold, debug=args.debug)
     print(f"   matched {len(matches)}/{len(stmt_rows)} rows")
     
-    # Save matches to JSON file
     if not args.dry_run:
-        # Convert datetime and Decimal objects to strings for JSON serialization
+        # Save JSON results
         results = {
             "matches": {},
             "statement_rows": [],
             "invoice_rows": []
         }
         
-        # Process statement rows (without embeddings)
+        # Process statement rows
         for idx, row in enumerate(stmt_rows):
-            # Create a serializable copy without vector embeddings
             clean_row = {k: v for k, v in row.items() if k != "vec"}
-            # Convert date objects to strings
             if "book_dt" in clean_row and clean_row["book_dt"]:
                 clean_row["book_dt"] = clean_row["book_dt"].isoformat()
             if "trans_dt" in clean_row and clean_row["trans_dt"]:
                 clean_row["trans_dt"] = clean_row["trans_dt"].isoformat()
-            # Convert Decimal objects to strings
             if "eur" in clean_row:
                 clean_row["eur"] = str(clean_row["eur"])
-            
             results["statement_rows"].append(clean_row)
             
-        # Process invoice rows (without embeddings)
+        # Process invoice rows
         for idx, row in enumerate(inv_rows):
-            # Create a serializable copy without vector embeddings
             clean_row = {k: v for k, v in row.items() if k != "vec"}
-            # Convert Path to string
             if "path" in clean_row:
                 clean_row["path"] = str(clean_row["path"])
-            # Convert date objects to strings
             if "date" in clean_row and clean_row["date"]:
                 clean_row["date"] = clean_row["date"].isoformat()
-            # Convert Decimal objects to strings
             if "amount" in clean_row:
                 clean_row["amount"] = str(clean_row["amount"])
-            
             results["invoice_rows"].append(clean_row)
         
-        # Convert match indices to strings for use as JSON keys
+        # Convert match indices to strings, ensuring Python native types
         for s_idx, i_idx in matches.items():
-            results["matches"][str(s_idx)] = i_idx
+            results["matches"][str(int(s_idx))] = int(i_idx)  # Convert numpy types to Python native types
             
         with open(args.out, "w") as f:
             json.dump(results, f, indent=2)
         print(f"✅ Saved match results to {args.out}")
+        
+        # Always generate the report
+        generate_markdown_report(stmt_rows, inv_rows, matches, args.report)
     else:
-        print("[DRY] Would save match results to output file")
+        print(f"[DRY] Would save match results to {args.out}")
+        print(f"[DRY] Would generate markdown report to {args.report}")
 
 
 if __name__ == "__main__":
