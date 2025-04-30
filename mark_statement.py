@@ -1,0 +1,556 @@
+"""
+mark_statement.py
+-----------------
+CLI tool that scans a credit‑card statement PDF (German Hanseatic layout),
+matches each transaction line against a folder of *renamed* invoice files
+(created by rename_agent.py), and adds a green check‑mark to every matched
+row in a copy of the statement.
+
+Usage
+-----
+python mark_statement.py --statement path/to/Statement.pdf \
+                         --invoices  path/to/renamed_folder \
+                         --out       path/to/Statement_marked.pdf \
+                         [--dry-run] [--fx-cache fx.json] [--debug]
+
+Dependencies
+------------
+pip install pdfplumber pymupdf rapidfuzz openai requests python-dotenv numpy tqdm
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+from datetime import datetime, date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+
+import fitz  # PyMuPDF
+import numpy as np
+from openai import OpenAI
+# Initialize OpenAI client (uses env vars OPENAI_API_KEY etc.)
+client = OpenAI()
+import pdfplumber
+import requests
+from dotenv import load_dotenv
+from tqdm import tqdm
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+INVOICE_RX = re.compile(
+    r"(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<method>[a-z0-9_]+)_(?P<amount>\d+\.\d{2})"
+    r"(?P<ccy>[A-Z]{3})_(?P<slug>.+)"
+)
+EMBED_MODEL = "text-embedding-3-small"
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def parse_decimal(val: str) -> Decimal:
+    val = val.replace(".", "").replace(",", ".").replace(" ", "")
+    try:
+        return Decimal(val)
+    except InvalidOperation:
+        return Decimal("0")
+
+
+def parse_date_de(val: str) -> Optional[date]:
+    try:
+        return datetime.strptime(val, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def load_fx_rate(usd_date: date, cache_path: Optional[Path]) -> Decimal:
+    """
+    Returns the USD→EUR mid‑market rate for the given date.
+    Uses exchangerate.host and caches daily results in JSON.
+    """
+    if not cache_path:
+        cache_path = Path(".fx_cache.json")
+    cache = {}
+    if cache_path.exists():
+        cache = json.loads(cache_path.read_text())
+    key = usd_date.isoformat()
+    if key in cache:
+        return Decimal(str(cache[key]))
+    url = f"https://api.exchangerate.host/{key}?base=USD&symbols=EUR"
+    try:
+        res = requests.get(url, timeout=10).json()
+        rate = Decimal(str(res["rates"]["EUR"]))
+        cache[key] = str(rate)
+        cache_path.write_text(json.dumps(cache, indent=2))
+        return rate
+    except Exception:
+        # Fallback to 1.0 to avoid crashing; will harm matching accuracy.
+        return Decimal("1")
+
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+
+# -----------------------------------------------------------------------------
+# Invoice side
+# -----------------------------------------------------------------------------
+def load_invoices(folder: Path) -> List[Dict]:
+    rows = []
+    for p in folder.glob("*.[pP][dDnN][fFgG]"):  # Match both .pdf and .png (case insensitive)
+        m = INVOICE_RX.match(p.stem)
+        if not m:
+            continue
+        d = m.groupdict()
+        rows.append(
+            {
+                "path": p,
+                "date": datetime.strptime(d["date"], "%y.%m.%d").date(),
+                "amount": Decimal(d["amount"]),
+                "ccy": d["ccy"],
+                "slug": d["slug"].replace("_", " ").lower(),
+            }
+        )
+    return rows
+
+
+# -----------------------------------------------------------------------------
+# Statement side
+# -----------------------------------------------------------------------------
+def extract_statement_rows(pdf_path: Path) -> List[Dict]:
+    rows = []
+    with pdfplumber.open(str(pdf_path)) as doc:
+        for page_idx, page in enumerate(doc.pages):
+            # crude: look at every text line
+            text = page.extract_text(x_tolerance=1, y_tolerance=3)
+            if not text:
+                continue
+            lines = text.splitlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                # match booking date at line start
+                m = re.match(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+Kartenumsatz\s+9174\s+(-?\d+[,\.]\d{2})", line)
+                if not m:
+                    i += 1
+                    continue
+                
+                book_dt, trans_dt, amount_eur = m.groups()
+                
+                # Get merchant name from next line if available
+                merchant = ""
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    # Skip if next line looks like a header or footer
+                    if not any(x in next_line.lower() for x in ["buchungs", "beschreibung", "datum", "hanseatic", "übertrag", "saldo"]):
+                        merchant = next_line.strip()
+                        i += 1  # Skip the merchant line in next iteration
+                
+                rows.append(
+                    {
+                        "page": page_idx,
+                        "book_dt": parse_date_de(book_dt),
+                        "trans_dt": parse_date_de(trans_dt),
+                        "descr": merchant.lower() if merchant else "kartenumsatz 9174",
+                        "eur": parse_decimal(amount_eur).quantize(Decimal("0.01"), ROUND_HALF_UP),
+                    }
+                )
+                i += 1
+    return rows
+
+
+# -----------------------------------------------------------------------------
+# LLM helpers
+# -----------------------------------------------------------------------------
+def get_embedding(text: str) -> np.ndarray:
+    """
+    Returns the embedding vector for the given text using OpenAI >=1.0 client.
+    """
+    resp = client.embeddings.create(model=EMBED_MODEL, input=[text[:200]])
+    return np.array(resp.data[0].embedding, dtype=np.float32)
+
+
+def get_merchant_context(descr: str) -> str:
+    """
+    Analyze merchant description to provide relevant context for matching.
+    Returns a string with known patterns and variations.
+    """
+    descr = descr.lower()
+    contexts = []
+    
+    # Common SaaS/Cloud services patterns
+    if any(x in descr for x in ['cloud', 'api', 'hosting', 'subscription']):
+        contexts.append("This is a cloud/SaaS service which often has variations in billing descriptions.")
+        contexts.append("Monthly charges may vary slightly due to usage-based pricing.")
+        
+    # Payment processors and financial services
+    if any(x in descr for x in ['payment', 'stripe', 'paypal', 'billing']):
+        contexts.append("This is a payment processor which may show different merchant names for the same service.")
+        
+    # Development tools and platforms
+    if any(x in descr for x in ['github', 'gitlab', 'vercel', 'heroku', 'twilio', 'openai']):
+        contexts.append("This is a development platform/tool with potential variations in product names.")
+        contexts.append("Charges might include product name, subscription tier, or usage period.")
+        
+    # Fuel and travel
+    if any(x in descr for x in ['shell', 'bp', 'fuel', 'gas', 'tankstelle']):
+        contexts.append("This is a fuel/gas station purchase.")
+        contexts.append("Station numbers and location details may vary in descriptions.")
+        
+    # Default context
+    if not contexts:
+        contexts.append("This is a general merchant transaction.")
+        
+    return " ".join(contexts)
+
+
+def referee_match(stmt: Dict, inv: Dict) -> Tuple[bool, float]:
+    """
+    Ask GPT‑4‑turbo whether the statement line and invoice describe the same purchase.
+    Returns (match_boolean, confidence_float).
+    Enhanced with merchant context and common variations.
+    """
+    merchant_context = get_merchant_context(stmt['descr'])
+    
+    prompt_system = (
+        "You are a bookkeeping assistant specializing in matching credit card statements "
+        "to invoices. Consider these key factors:\n"
+        "1. Merchant names may vary between statement and invoice\n"
+        "2. Amounts may differ slightly due to FX rates\n"
+        "3. Dates should typically be within 2 weeks\n"
+        "4. Transaction types and merchant patterns matter\n"
+        "Return ONLY valid JSON like {\"match\":true, \"confidence\":0.83}"
+    )
+    
+    prompt_user = (
+        f"STATEMENT:\n"
+        f"booking_date={stmt['book_dt']}\n"
+        f"trans_date={stmt['trans_dt']}\n"
+        f"description=\"{stmt['descr']}\"\n"
+        f"amount_eur={stmt['eur']}\n\n"
+        f"INVOICE:\n"
+        f"file=\"{inv['path'].name}\"\n"
+        f"date={inv['date']}\n"
+        f"amount={inv['amount']} {inv['ccy'].upper()}\n\n"
+        f"MERCHANT CONTEXT:\n{merchant_context}"
+    )
+    
+    resp = client.chat.completions.create(
+        model="gpt-4-turbo-preview",
+        messages=[
+            {"role": "system", "content": prompt_system},
+            {"role": "user", "content": prompt_user},
+        ],
+        temperature=0,
+    )
+    try:
+        data = json.loads(resp.choices[0].message.content)
+        return bool(data.get("match")), float(data.get("confidence", 0))
+    except Exception:
+        return False, 0.0
+
+
+def slugify(text: str, cache: Dict[str, str]) -> str:
+    if text in cache:
+        return cache[text]
+    # heuristic quick slug
+    s = re.sub(r"[^a-z0-9]+", " ", text).strip()
+    cache[text] = s
+    return s
+
+
+# Clean description for merchant name extraction
+def clean_descr(raw: str) -> str:
+    """
+    Remove boiler‑plate tokens like 'kartenumsatz', card suffix, etc.,
+    so that the remaining text is mostly the merchant name.
+    """
+    trash = {"kartenumsatz", "gutschrift", "visa", "mastercard", "debit", "credit"}
+    tokens = re.split(r"[^a-z0-9]+", raw.lower())
+    filtered = [t for t in tokens if t and t not in trash and not t.isdigit()]
+    return " ".join(filtered)
+
+
+# -----------------------------------------------------------------------------
+# Matching logic
+# -----------------------------------------------------------------------------
+def normalize_merchant_name(name: str) -> str:
+    """
+    Normalize merchant names for better matching by:
+    - Removing common suffixes (.com, inc, gmbh)
+    - Removing location info after commas
+    - Removing special characters
+    - Converting to lowercase
+    - Normalizing common terms (e.g. fuel station variants)
+    """
+    # Convert to lowercase and remove special chars
+    name = name.lower()
+    
+    # Remove location info after comma
+    name = name.split(',')[0]
+    
+    # Remove common suffixes
+    suffixes = ['.com', '.co', 'inc', 'gmbh', 'ltd', 'llc']
+    for suffix in suffixes:
+        name = name.replace(suffix, '')
+    
+    # Normalize common terms
+    fuel_terms = {
+        'oil': 'fuel',
+        'gas': 'fuel',
+        'tankstelle': 'fuel',
+        'station': 'fuel',
+        'fuel': 'fuel'
+    }
+    
+    words = name.split()
+    normalized = []
+    for word in words:
+        # Skip pure numbers (like "209")
+        if word.isdigit():
+            continue
+        # Replace with normalized term if exists
+        normalized.append(fuel_terms.get(word, word))
+    
+    # Remove special characters and normalize spaces
+    name = ' '.join(normalized)
+    name = re.sub(r'[^\w\s]', ' ', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    return name
+
+def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: str, fx_rate: Decimal) -> float:
+    """
+    Compare amounts with FX rate tolerance
+    Returns a score between 0 and 1
+    """
+    if inv_currency != 'EUR':
+        # Allow for FX rate variations of ±10%
+        base_rate = fx_rate
+        min_rate = base_rate * Decimal('0.90')
+        max_rate = base_rate * Decimal('1.10')
+        
+        min_eur = inv_amount * min_rate
+        max_eur = inv_amount * max_rate
+        
+        # If statement amount falls within the range, it's a perfect match
+        if min_eur <= stmt_amount <= max_eur:
+            return 1.0
+            
+        # Otherwise calculate relative difference using closest value
+        closest = min(abs(stmt_amount - min_eur), abs(stmt_amount - max_eur))
+        rel_diff = closest / max(stmt_amount, max_eur)
+    else:
+        rel_diff = abs(stmt_amount - inv_amount) / max(stmt_amount, inv_amount)
+    
+    # Convert difference to similarity score
+    return float(max(0, 1 - min(rel_diff, 1)))
+
+def match_rows(
+    stmt_rows: List[Dict],
+    inv_rows: List[Dict],
+    fx_cache: Path,
+    threshold: float = 0.5,
+    debug: bool = False,
+) -> Dict[int, int]:
+    """
+    Returns a dict mapping statement index → invoice index
+    """
+    # preprocess statement rows: clean merchant text and embed
+    valid_stmt_rows = []
+    for idx, r in enumerate(stmt_rows):
+        cleaned = clean_descr(r["descr"])
+        if debug:
+            print(f"\nRaw description for row {idx}: \"{r['descr']}\"")
+            print(f"Cleaned description: \"{cleaned}\"")
+        if not cleaned:
+            if debug:
+                print(f"⚠️  Statement row {idx} cleaned to empty string; skipping")
+            continue
+        r["slug"] = normalize_merchant_name(cleaned)
+        if debug:
+            print(f"Normalized description: \"{r['slug']}\"")
+        r["vec"] = get_embedding(r["slug"])
+        valid_stmt_rows.append(r)
+
+    # if some rows were skipped, update stmt_rows reference
+    stmt_rows = valid_stmt_rows
+    for i in inv_rows:
+        i["slug"] = normalize_merchant_name(i["slug"].replace("_", " "))
+        embed_text = f"{i['slug']} {i['amount']} {i['ccy']}"
+        i["vec"] = get_embedding(embed_text)
+
+    matches: Dict[int, int] = {}
+    used_invoices = set()
+
+    if not stmt_rows:
+        return matches  # nothing to match
+    stmt_mat = np.stack([r["vec"] for r in stmt_rows])
+    inv_mat = np.stack([i["vec"] for i in inv_rows]).T  # transpose for dot product
+    denom_stmt = np.linalg.norm(stmt_mat, axis=1, keepdims=True)
+    denom_inv = np.linalg.norm(inv_mat, axis=0, keepdims=True)
+    sims = stmt_mat @ inv_mat / (denom_stmt * denom_inv + 1e-9)  # shape (S, I)
+
+    for s_idx, s in enumerate(tqdm(stmt_rows, desc="⚖️  Matching rows")):
+        # get top 6 invoice indices by cosine similarity
+        top_idx = np.argsort(-sims[s_idx])[:6]
+        if debug:
+            print(f"\n🔎 Statement row {s_idx}: \"{s['descr'][:60]}…\" "
+                  f"EUR {s['eur']}  ({s['trans_dt']})")
+        
+        # Store all potential matches for this statement row
+        potential_matches = []
+        
+        for i_idx in top_idx:
+            if i_idx in used_invoices:
+                continue
+            inv = inv_rows[i_idx]
+
+            # quick heuristic score
+            sim = float(sims[s_idx, i_idx])
+            date_delta = abs((s["trans_dt"] - inv["date"]).days)
+            date_score = 1 - min(date_delta, 14) / 14
+            
+            try:
+                amt_score = amount_similarity(
+                    s["eur"], 
+                    inv["amount"], 
+                    inv["ccy"],
+                    load_fx_rate(inv["date"], fx_cache)
+                )
+            except Exception:
+                amt_score = 0.0
+            
+            # Perfect matches on date and amount should boost the overall score
+            perfect_match = date_delta == 0 and amt_score > 0.95
+            
+            # Adjust weights based on similarity and perfect matches
+            if perfect_match:  # Perfect date and amount - be more lenient on name
+                heuristic = 0.4 * sim + 0.3 * amt_score + 0.3 * date_score + 0.2  # Bonus for perfect match
+            elif sim > 0.6:  # High name similarity - be more lenient on other factors
+                heuristic = 0.7 * sim + 0.15 * amt_score + 0.15 * date_score
+            else:  # Normal weighting
+                heuristic = 0.5 * sim + 0.3 * amt_score + 0.2 * date_score
+
+            if debug:
+                print(f"   → Candidate {inv['path'].name:<40} "
+                      f"sim={sim:.2f} dateΔ={date_delta}d amtΔ={(1-amt_score):.2%} "
+                      f"heuristic={heuristic:.2f}", end="")
+
+            # Use LLM referee more often:
+            # 1. Always for high similarity but low heuristic
+            # 2. For medium similarity with decent heuristic
+            # 3. For borderline cases
+            should_use_llm = (
+                (sim > 0.6 and heuristic < threshold) or  # High sim but other factors off
+                (sim > 0.4 and heuristic > 0.35) or      # Medium sim with decent score
+                (0.45 <= heuristic <= 0.55)              # Borderline cases
+            )
+
+            if heuristic >= threshold:
+                match, conf = True, heuristic
+            elif should_use_llm:
+                match, conf = referee_match(s, inv)
+            else:
+                match, conf = False, heuristic
+
+            if debug and match:
+                print(f"  ✅ accepted (conf={conf:.2f})")
+            elif debug:
+                print("  ✖")
+
+            if match and conf >= 0.5:
+                potential_matches.append((i_idx, conf, date_delta))
+
+        # If we have multiple matches, pick the one with closest date
+        if potential_matches:
+            # Sort by confidence first (-x[1] for descending), then use date as tiebreaker for equal confidences
+            potential_matches.sort(key=lambda x: (-x[1], x[2]))
+            best_idx = potential_matches[0][0]
+            matches[s_idx] = best_idx
+            used_invoices.add(best_idx)
+
+    return matches
+
+
+# -----------------------------------------------------------------------------
+# PDF annotation
+# -----------------------------------------------------------------------------
+def annotate_pdf(
+    pdf_path: Path,
+    stmt_rows: List[Dict],
+    matches: Dict[int, int],
+    out_path: Path,
+    dry_run: bool = False,
+):
+    doc = fitz.open(str(pdf_path))
+    for s_idx, inv_idx in matches.items():
+        row = stmt_rows[s_idx]
+        page = doc[row["page"]]
+        # find first occurrence of description
+        locs = page.search_for(row["descr"][:25])  # search a prefix
+        if not locs:
+            continue
+        x0, y0, *_ = locs[0]
+        if dry_run:
+            print(f"[DRY] Would mark page {row['page']+1} at ({x0:.1f},{y0:.1f}) -> {row['descr']}")
+        else:
+            page.insert_text(
+                (x0 - 15, y0 + 2),
+                "✓",
+                fontsize=12,
+                color=(0, 0.6, 0),
+                overlay=True,
+            )
+    if not dry_run:
+        doc.save(str(out_path))
+        print(f"✔ Saved annotated PDF to {out_path}")
+    doc.close()
+
+
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
+def main():
+    load_dotenv()
+    parser = argparse.ArgumentParser(description="Mark statement rows with matching invoices.")
+    parser.add_argument("--statement", type=Path, required=True)
+    parser.add_argument("--invoices", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--fx-cache", type=Path, default=Path(".fx_rates.json"))
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--threshold", type=float, default=0.6)
+    parser.add_argument("--debug", action="store_true", help="Verbose matching output")
+    args = parser.parse_args()
+
+    if not args.statement.exists():
+        sys.exit("Statement PDF not found.")
+    if not args.invoices.exists():
+        sys.exit("Invoices folder not found.")
+
+    print("📄 Extracting statement rows …")
+    stmt_rows = extract_statement_rows(args.statement)
+    print(f"   found {len(stmt_rows)} rows")
+
+    print("📂 Loading invoices …")
+    inv_rows = load_invoices(args.invoices)
+    print(f"   found {len(inv_rows)} invoices")
+
+    if not stmt_rows or not inv_rows:
+        sys.exit("Nothing to match; aborting.")
+
+    print("🔍 Matching …")
+    matches = match_rows(stmt_rows, inv_rows, args.fx_cache, threshold=args.threshold, debug=args.debug)
+    print(f"   matched {len(matches)}/{len(stmt_rows)} rows")
+
+    print("✏️  Annotating PDF …")
+    annotate_pdf(args.statement, stmt_rows, matches, args.out, dry_run=args.dry_run)
+
+
+if __name__ == "__main__":
+    main()
