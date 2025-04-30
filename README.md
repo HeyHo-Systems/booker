@@ -29,11 +29,30 @@ You can also point the `OPENAI_API_BASE` / `OPENAI_API_KEY` variables to your co
 
 ## 3. Directory Structure
 
-The script uses the following directory structure in your Downloads folder:
-- `raw/` - Place your unprocessed invoices/receipts here
-- `creditcard/` - Processed files paid with credit cards (Visa, Mastercard, etc.)
-- `giro/` - Processed files paid with other methods (PayPal, SEPA, etc.)
-- `processed/` - Original files after processing (including duplicates)
+The script uses the following directory structure in your Downloads folder under `booker/`:
+
+**Required (you must create this):**
+- `~/Downloads/booker/raw/` - Place your unprocessed invoices/receipts here
+
+**Auto-created by the program:**
+- `~/Downloads/booker/creditcard/` - Processed files paid with credit cards (Visa, Mastercard, etc.)
+- `~/Downloads/booker/giro/` - Processed files paid with other methods (PayPal, SEPA, etc.)
+- `~/Downloads/booker/processed/` - Original files after processing (including duplicates)
+
+### Initial Setup
+
+1. Create the raw directory:
+```bash
+mkdir -p ~/Downloads/booker/raw
+```
+
+2. Place your unprocessed invoices/receipts in the raw directory:
+```bash
+# Example: Copy some PDFs to process
+cp /path/to/your/invoices/*.pdf ~/Downloads/booker/raw/
+```
+
+The program will automatically create the other directories when run.
 
 ## 4. File Naming Convention
 

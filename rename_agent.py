@@ -26,10 +26,10 @@ reader = easyocr.Reader(['en', 'de'])  # Support for English and German
 MAX_PROMPT_CHARS = 3500  # first N chars of document text sent to the LLM
 
 # Directory structure
-RAW_DIR = Path.home() / "Downloads" / "raw"
-CREDITCARD_DIR = Path.home() / "Downloads" / "creditcard"
-GIRO_DIR = Path.home() / "Downloads" / "giro"
-PROCESSED_DIR = Path.home() / "Downloads" / "processed"
+RAW_DIR = Path.home() / "Downloads" / "booker" / "raw"
+CREDITCARD_DIR = Path.home() / "Downloads" / "booker" / "creditcard"
+GIRO_DIR = Path.home() / "Downloads" / "booker" / "giro"
+PROCESSED_DIR = Path.home() / "Downloads" / "booker" / "processed"
 
 def ensure_directories():
     """Create the required directories if they don't exist."""
