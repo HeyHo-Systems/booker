@@ -1,14 +1,14 @@
 """
-mark_statement.py
------------------
+match_my_statements.py
+---------------------
 CLI tool that scans a credit‑card statement PDF (German Hanseatic layout),
 matches each transaction line against a folder of *renamed* invoice files
-(created by rename_agent.py). This script identifies matching transactions
+(created by rename_my_invoices.py). This script identifies matching transactions
 and generates a report.
 
 Usage
 -----
-python mark_statement.py --statement path/to/Statement.pdf \
+python match_my_statements.py --statement path/to/Statement.pdf \
                          --invoices  path/to/renamed_folder \
                          [--dry-run] [--fx-cache fx.json] [--debug]
 

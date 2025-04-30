@@ -1,7 +1,16 @@
 {
 	"folders": [
 		{
-			"path": "."
+			"path": ".",
+			"name": "booker-root"
+		},
+		{
+			"path": "./match_my_statements",
+			"name": "match_my_statements"
+		},
+		{
+			"path": "./rename_my_invoices", 
+			"name": "rename_my_invoices"
 		}
 	],
 	"settings": {
@@ -20,6 +29,56 @@
 			".pytest_cache/**": true,
 			"htmlcov/**": true,
 			"test_invoices/**": true
+		},
+		"python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+		"python.analysis.extraPaths": [
+			"${workspaceFolder}/match_my_statements",
+			"${workspaceFolder}/rename_my_invoices"
+		],
+		"files.associations": {
+			"*.env.example": "dotenv"
+		},
+		"workbench.colorCustomizations": {
+			"titleBar.activeBackground": "#2d3748",
+			"titleBar.activeForeground": "#e2e8f0",
+			"activityBar.background": "#2d3748",
+			"activityBar.foreground": "#e2e8f0",
+			"[match_my_statements]": {
+				"titleBar.activeBackground": "#2c5282",
+				"titleBar.activeForeground": "#ebf8ff",
+				"activityBar.background": "#2c5282",
+				"activityBar.foreground": "#ebf8ff",
+				"statusBar.background": "#2c5282",
+				"statusBar.foreground": "#ebf8ff"
+			},
+			"[rename_my_invoices]": {
+				"titleBar.activeBackground": "#744210",
+				"titleBar.activeForeground": "#fffff0",
+				"activityBar.background": "#744210",
+				"activityBar.foreground": "#fffff0",
+				"statusBar.background": "#744210",
+				"statusBar.foreground": "#fffff0"
+			}
 		}
+	},
+	"launch": {
+		"configurations": [
+			{
+				"name": "Match My Statements",
+				"type": "python",
+				"request": "launch",
+				"program": "${workspaceFolder}/match_my_statements/match_my_statements.py",
+				"args": ["--test"],
+				"console": "integratedTerminal"
+			},
+			{
+				"name": "Rename My Invoices",
+				"type": "python",
+				"request": "launch",
+				"program": "${workspaceFolder}/rename_my_invoices/rename_my_invoices.py",
+				"args": ["--dry-run"],
+				"console": "integratedTerminal"
+			}
+		]
 	}
 }

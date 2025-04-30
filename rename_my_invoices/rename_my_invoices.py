@@ -1,3 +1,24 @@
+"""
+rename_my_invoices.py
+-------------------
+CLI tool that analyzes PDF invoices and receipts using AI, extracts key transaction data,
+and automatically renames the files using a consistent format for easy bookkeeping and matching.
+
+Usage
+-----
+python rename_my_invoices.py [--input path/to/invoice.pdf] [--dir input_directory] [--dry-run]
+
+The tool will:
+1. Extract text from PDF/image files
+2. Use GPT-4o to identify transaction details (date, payment method, amount, purpose)
+3. Generate a standardized filename: YY.MM.DD_method_amount.CCY_purpose.pdf
+4. Move the file to the appropriate directory based on payment type
+
+Dependencies
+------------
+pip install openai python-dotenv pdfminer.six easyocr pdf2image pillow
+"""
+
 from __future__ import annotations
 import argparse
 import json

@@ -1,135 +1,82 @@
-# Rename-my-Invoices (v0.2)
+# Booker
 
-A Python utility that processes invoices and receipts (PDF/images), extracts key information using OCR and LLM, and organizes them into categorized folders with standardized names.
+A bookkeeping toolkit with two complementary Python tools:
 
-## 1. Install
+1. **rename_my_invoices** - Rename and organize invoice PDFs and images using AI
+2. **match_my_statements** - Match credit card statements against renamed invoices
 
-Create a fresh environment (optional):
-```bash
-python -m venv .venv
-source .venv/bin/activate
+## Quick Links
+
+- [Rename My Invoices Documentation](rename_my_invoices/README.md)
+- [Match My Statements Documentation](match_my_statements/README.md)
+
+## Overview
+
+This project provides a complete workflow for organizing financial documents:
+
+1. First, use `rename_my_invoices` to process your invoice PDFs and images:
+   - Extract dates, amounts, and payment methods using AI
+   - Automatically rename and organize files based on payment type
+   - Create consistent filenames for easy lookup
+
+2. Then, use `match_my_statements` to reconcile your statements:
+   - Process credit card statements and find matching invoices
+   - Generate detailed reports of matched and unmatched items
+   - Identify missing documentation
+
+## Project Structure
+
+```
+booker/
+├── match_my_statements/       # Statement matching tool
+│   ├── match_my_statements.py # Main script
+│   ├── README.md              # Documentation
+│   ├── requirements.txt       # Dependencies
+│   └── .env.example           # Sample environment config
+│
+├── rename_my_invoices/        # Invoice renaming tool
+│   ├── rename_my_invoices.py  # Main script
+│   ├── README.md              # Documentation
+│   ├── requirements.txt       # Dependencies
+│   └── .env.example           # Sample environment config
+│
+└── README.md                  # This file
 ```
 
-Install dependencies:
+## Installation
+
+Each tool can be installed independently:
+
 ```bash
+# For the rename_my_invoices tool
+cd rename_my_invoices
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env      # Edit with your API key
 ```
 
-System dependencies:
-- macOS: `brew install poppler`
-- Ubuntu: `sudo apt-get install poppler-utils`
-
-## 2. Configure
-
-Set up your OpenAI API key:
 ```bash
-export OPENAI_API_KEY="sk-…"
-```
-You can also point the `OPENAI_API_BASE` / `OPENAI_API_KEY` variables to your compatible proxy.
-
-## 3. Directory Structure
-
-The script uses the following directory structure in your Downloads folder under `booker/`:
-
-**Required (you must create this):**
-- `~/Downloads/booker/raw/` - Place your unprocessed invoices/receipts here
-
-**Auto-created by the program:**
-- `~/Downloads/booker/creditcard/` - Processed files paid with credit cards (Visa, Mastercard, etc.)
-- `~/Downloads/booker/giro/` - Processed files paid with other methods (PayPal, SEPA, etc.)
-- `~/Downloads/booker/processed/` - Original files after processing (including duplicates)
-
-### Initial Setup
-
-1. Create the raw directory:
-```bash
-mkdir -p ~/Downloads/booker/raw
+# For the match_my_statements tool
+cd match_my_statements
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env      # Edit with your API key
 ```
 
-2. Place your unprocessed invoices/receipts in the raw directory:
-```bash
-# Example: Copy some PDFs to process
-cp /path/to/your/invoices/*.pdf ~/Downloads/booker/raw/
-```
+## Dependencies
 
-The program will automatically create the other directories when run.
+Each tool has its own specific dependencies listed in its respective requirements.txt file.
 
-## 4. File Naming Convention
+Both tools require:
+- Python 3.9+
+- OpenAI API access
 
-Processed files are renamed using this format:
-```
-YY.MM.DD_method_amount_purpose.ext
-```
+## Usage
 
-Examples:
-- `25.04.14_visa_9174_20.00USD_twilio_api.pdf`
-- `25.04.08_sepa_513.00EUR_finn_car.pdf`
-- `25.04.13_paypal_2.99EUR_apple_icloud.png`
+For detailed usage instructions, see the tool-specific documentation linked above.
 
-Components:
-- Date: YY.MM.DD format
-- Payment method: visa, mastercard, paypal, sepa, etc.
-  - For credit cards: includes last 4 digits if available
-  - For PayPal: includes email if available
-- Amount: includes currency (EUR, USD, etc.)
-- Purpose: company_purpose format (max 8 chars for purpose)
+## License
 
-## 5. Usage
-
-Try a dry run first:
-```bash
-python rename_agent.py --dry-run
-```
-
-If the output looks good, process the files:
-```bash
-python rename_agent.py
-```
-
-### Options
-
-| Flag | Effect |
-|------|--------|
-| `--dry-run` | Preview the proposed changes without modifying anything |
-| `--log rename_log.jsonl` | Append detailed JSON logs for each processed file |
-
-## 6. How it works
-
-1. **Text Extraction**
-   - PDF text → `pdfminer.six`
-   - If no text found → Convert to image with `pdf2image`
-   - Image OCR → `easyocr` (supports English and German)
-
-2. **LLM Processing**
-   - Sends extracted text to GPT-4
-   - Extracts date, payment method, amount, and purpose
-   - Normalizes fields for consistent naming
-
-3. **File Organization**
-   - Sorts into creditcard/ or giro/ based on payment method
-   - Moves original to processed/
-   - Handles duplicates by adding "duplicate_" prefix
-
-### Payment Method Sorting
-
-Files are sorted based on the payment method:
-
-**creditcard/** folder:
-- Visa payments
-- Mastercard payments
-- Generic card payments
-- Unknown payment methods
-
-**giro/** folder:
-- PayPal payments
-- SEPA transfers
-- All other payment methods
-
-## 7. Duplicate Handling
-
-When a file would create a duplicate in the target directory:
-- Original stays in place
-- New file is moved to processed/ with "duplicate_" prefix
-- Both actions are logged
-
-Happy organizing!
+MIT
