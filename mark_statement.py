@@ -3,19 +3,19 @@ mark_statement.py
 -----------------
 CLI tool that scans a credit‑card statement PDF (German Hanseatic layout),
 matches each transaction line against a folder of *renamed* invoice files
-(created by rename_agent.py), and adds a green check‑mark to every matched
-row in a copy of the statement.
+(created by rename_agent.py). This script identifies matching transactions
+but no longer creates an annotated PDF (that functionality has been removed).
 
 Usage
 -----
 python mark_statement.py --statement path/to/Statement.pdf \
                          --invoices  path/to/renamed_folder \
-                         --out       path/to/Statement_marked.pdf \
+                         --out       path/to/output_file.json \
                          [--dry-run] [--fx-cache fx.json] [--debug]
 
 Dependencies
 ------------
-pip install pdfplumber pymupdf rapidfuzz openai requests python-dotenv numpy tqdm
+pip install pdfplumber rapidfuzz openai requests python-dotenv numpy tqdm
 """
 
 from __future__ import annotations
@@ -31,15 +31,15 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-import fitz  # PyMuPDF
 import numpy as np
-from openai import OpenAI
-# Initialize OpenAI client (uses env vars OPENAI_API_KEY etc.)
-client = OpenAI()
 import pdfplumber
 import requests
 from dotenv import load_dotenv
+from openai import OpenAI
 from tqdm import tqdm
+
+# Initialize OpenAI client (uses env vars OPENAI_API_KEY etc.)
+client = OpenAI()
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -479,41 +479,6 @@ def match_rows(
 
 
 # -----------------------------------------------------------------------------
-# PDF annotation
-# -----------------------------------------------------------------------------
-def annotate_pdf(
-    pdf_path: Path,
-    stmt_rows: List[Dict],
-    matches: Dict[int, int],
-    out_path: Path,
-    dry_run: bool = False,
-):
-    doc = fitz.open(str(pdf_path))
-    for s_idx, inv_idx in matches.items():
-        row = stmt_rows[s_idx]
-        page = doc[row["page"]]
-        # find first occurrence of description
-        locs = page.search_for(row["descr"][:25])  # search a prefix
-        if not locs:
-            continue
-        x0, y0, *_ = locs[0]
-        if dry_run:
-            print(f"[DRY] Would mark page {row['page']+1} at ({x0:.1f},{y0:.1f}) -> {row['descr']}")
-        else:
-            page.insert_text(
-                (x0 - 15, y0 + 2),
-                "✓",
-                fontsize=12,
-                color=(0, 0.6, 0),
-                overlay=True,
-            )
-    if not dry_run:
-        doc.save(str(out_path))
-        print(f"✔ Saved annotated PDF to {out_path}")
-    doc.close()
-
-
-# -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 def main():
@@ -547,9 +512,56 @@ def main():
     print("🔍 Matching …")
     matches = match_rows(stmt_rows, inv_rows, args.fx_cache, threshold=args.threshold, debug=args.debug)
     print(f"   matched {len(matches)}/{len(stmt_rows)} rows")
-
-    print("✏️  Annotating PDF …")
-    annotate_pdf(args.statement, stmt_rows, matches, args.out, dry_run=args.dry_run)
+    
+    # Save matches to JSON file
+    if not args.dry_run:
+        # Convert datetime and Decimal objects to strings for JSON serialization
+        results = {
+            "matches": {},
+            "statement_rows": [],
+            "invoice_rows": []
+        }
+        
+        # Process statement rows (without embeddings)
+        for idx, row in enumerate(stmt_rows):
+            # Create a serializable copy without vector embeddings
+            clean_row = {k: v for k, v in row.items() if k != "vec"}
+            # Convert date objects to strings
+            if "book_dt" in clean_row and clean_row["book_dt"]:
+                clean_row["book_dt"] = clean_row["book_dt"].isoformat()
+            if "trans_dt" in clean_row and clean_row["trans_dt"]:
+                clean_row["trans_dt"] = clean_row["trans_dt"].isoformat()
+            # Convert Decimal objects to strings
+            if "eur" in clean_row:
+                clean_row["eur"] = str(clean_row["eur"])
+            
+            results["statement_rows"].append(clean_row)
+            
+        # Process invoice rows (without embeddings)
+        for idx, row in enumerate(inv_rows):
+            # Create a serializable copy without vector embeddings
+            clean_row = {k: v for k, v in row.items() if k != "vec"}
+            # Convert Path to string
+            if "path" in clean_row:
+                clean_row["path"] = str(clean_row["path"])
+            # Convert date objects to strings
+            if "date" in clean_row and clean_row["date"]:
+                clean_row["date"] = clean_row["date"].isoformat()
+            # Convert Decimal objects to strings
+            if "amount" in clean_row:
+                clean_row["amount"] = str(clean_row["amount"])
+            
+            results["invoice_rows"].append(clean_row)
+        
+        # Convert match indices to strings for use as JSON keys
+        for s_idx, i_idx in matches.items():
+            results["matches"][str(s_idx)] = i_idx
+            
+        with open(args.out, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"✅ Saved match results to {args.out}")
+    else:
+        print("[DRY] Would save match results to output file")
 
 
 if __name__ == "__main__":
