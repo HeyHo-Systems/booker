@@ -46,14 +46,14 @@ python collect_my_payout_docs.py 2023 5
 
 ```
 payouts: 100%|████████████████████| 3/3 [00:09<00:00, 3.16s/it]
-✔ saved 2023-05-15_1582.33eur_po_1NlXYZ.pdf
-✔ saved 2023-05-22_-314.64eur_po_1NlABC.pdf
-✔ saved 2023-05-30_764.90eur_po_1NlDEF.pdf
+✔ saved 2023-05-15_1582.33eur_po_1NlXYZ.pdf to ~/Downloads
+✔ saved 2023-05-22_-314.64eur_po_1NlABC.pdf to ~/Downloads
+✔ saved 2023-05-30_764.90eur_po_1NlDEF.pdf to ~/Downloads
 ```
 
 ## File Format
 
-Files are saved in the current directory with this naming pattern:
+Files are saved directly to your ~/Downloads folder with this naming pattern:
 
 ```
 YYYY-MM-DD_amount_currency_payoutid.pdf
@@ -81,8 +81,8 @@ Where:
 1. Lists all payouts for the specified month
 2. For each payout, fetches all balance transactions
 3. Extracts PDF URLs for all invoices and credit notes
-4. Downloads and merges all PDFs into a single file
-5. Saves with a standardized filename
+4. Downloads and merges all PDFs into a single file using PdfWriter
+5. Saves with a standardized filename directly to ~/Downloads
 
 ## Security Notes
 

@@ -1,9 +1,13 @@
 #!/usr/bin/env python
-import os, argparse, io, requests, stripe
+import os, argparse, io, requests, stripe, shutil
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
-from pypdf import PdfMerger
+from pypdf import PdfWriter
 from tqdm import tqdm      # nice progress bar
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 stripe.api_key = os.environ["STRIPE_KEY"]     # export STRIPE_KEY=sk_live_...
 
@@ -33,17 +37,19 @@ def docs_for_payout(po_id: str):
         inv = getattr(tx.source, "invoice", None)
         if inv and inv.invoice_pdf:
             urls.add(inv.invoice_pdf)                # invoice itself
-            for cn in inv.credit_notes:              # any credit-notes
-                if cn.get("pdf"):
-                    urls.add(cn["pdf"])
+            if hasattr(inv, 'credit_notes') and inv.credit_notes:  # safely check if credit_notes exists
+                for cn in inv.credit_notes:              # any credit-notes
+                    if cn.get("pdf"):
+                        urls.add(cn["pdf"])
     return sorted(urls)
 
 def merge_pdfs(urls):
-    merger = PdfMerger()
+    writer = PdfWriter()
     for u in urls:
-        merger.append(io.BytesIO(requests.get(u, timeout=10).content))
+        pdf_bytes = io.BytesIO(requests.get(u, timeout=10).content)
+        writer.append(pdf_bytes)
     buf = io.BytesIO()
-    merger.write(buf)
+    writer.write(buf)
     buf.seek(0)
     return buf
 
@@ -60,11 +66,17 @@ def main():
             continue
         pdf  = merge_pdfs(urls)
         fname = f"{datetime.utcfromtimestamp(p.arrival_date).date()}_" \
-                f"{p.net/100:.2f}{p.currency}_" \
+                f"{p.amount/100:.2f}{p.currency}_" \
                 f"{p.id}.pdf"
-        with open(fname, "wb") as f:
+        
+        # Save directly to Downloads folder
+        downloads_path = os.path.expanduser("~/Downloads")
+        download_file_path = os.path.join(downloads_path, fname)
+        
+        with open(download_file_path, "wb") as f:
             f.write(pdf.read())
-        tqdm.write(f"✔ saved {fname}")
+        
+        tqdm.write(f"✔ saved {fname} to ~/Downloads")
 
 if __name__ == "__main__":
     main()
