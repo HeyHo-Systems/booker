@@ -17,10 +17,13 @@ A smart CLI tool that automatically matches credit card statement entries with c
 2. Install required dependencies:
 
 ```bash
-pip install pdfplumber rapidfuzz openai requests python-dotenv numpy tqdm
+cd match_my_statements
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-3. Create a `.env` file in the project root with:
+3. Create a `.env` file in the project directory with:
 
 ```
 OPENAI_API_KEY=your_api_key_here
@@ -31,17 +34,17 @@ OPENAI_API_KEY=your_api_key_here
 Basic usage:
 
 ```bash
-python match_my_statements.py --statement path/to/Statement.pdf --invoices path/to/invoices_folder
+python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
 ```
 
 All options:
 
 ```bash
-python match_my_statements.py --statement path/to/Statement.pdf \
-                        --invoices path/to/invoices_folder \
-                        [--out custom_results.json] \
-                        [--report custom_report.md] \
-                        [--fx-cache fx_rates.json] \
+python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf \
+                        --invoices ~/Downloads/booker/creditcard \
+                        [--out ~/Downloads/booker/results/April2023_results.json] \
+                        [--report ~/Downloads/booker/results/April2023_report.md] \
+                        [--fx-cache ~/.fx_rates.json] \
                         [--threshold 0.6] \
                         [--dry-run] \
                         [--debug]
@@ -49,7 +52,7 @@ python match_my_statements.py --statement path/to/Statement.pdf \
 
 Parameters:
 - `--statement`: Path to your Hanseatic Bank PDF statement
-- `--invoices`: Directory containing renamed invoice files
+- `--invoices`: Directory containing renamed invoice files (usually ~/Downloads/booker/creditcard)
 - `--out`: Custom path for JSON output (default: StatementName_results.json)
 - `--report`: Custom path for markdown report (default: StatementName_report.md) 
 - `--fx-cache`: Path to store/load FX rate data (default: .fx_rates.json)
@@ -59,7 +62,7 @@ Parameters:
 
 Testing mode:
 ```bash
-python match_my_statements.py --test [--out test_results.json] [--report test_report.md]
+python match_my_statements.py --test
 ```
 
 ## Input Requirements
@@ -68,6 +71,7 @@ python match_my_statements.py --test [--out test_results.json] [--report test_re
 - PDF format
 - German Hanseatic Bank credit card statement layout
 - Contains transaction entries with dates, descriptions and amounts
+- Typically placed in ~/Downloads/booker/statements/ folder
 
 ### Invoice Files
 The program expects invoice files named according to this pattern:
@@ -83,7 +87,8 @@ Components:
 - `amount.ccy`: Amount with currency code (e.g., 83.83EUR)
 - `slug`: Description with underscores instead of spaces
 
-These files are typically created by the companion `rename_my_invoices.py` script.
+These files are typically created by the companion `rename_my_invoices` tool and stored in the 
+~/Downloads/booker/creditcard/ or ~/Downloads/booker/giro/ folders.
 
 ## Output Files
 
@@ -117,13 +122,13 @@ Human-readable summary with:
 
 ## Example Workflow
 
-1. Download credit card statement PDF
-2. Ensure invoices are properly renamed using `rename_my_invoices.py`
+1. Download credit card statement PDF to ~/Downloads/booker/statements/
+2. Ensure invoices are properly renamed using `rename_my_invoices` and stored in ~/Downloads/booker/creditcard/
 3. Run the matching process:
    ```bash
-   python match_my_statements.py --statement April2023.pdf --invoices ./invoices
+   python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
    ```
-4. Review the generated report (`April2023_report.md`)
+4. Review the generated report (~/Downloads/booker/statements/April2023_report.md)
 5. Check unmatched items and address any issues
 
 ## Troubleshooting

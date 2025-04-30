@@ -4,14 +4,11 @@ A Python utility that processes invoices and receipts (PDF/images), extracts key
 
 ## 1. Install
 
-Create a fresh environment (optional):
+Create a fresh environment:
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-Install dependencies:
-```bash
+cd rename_my_invoices
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -23,7 +20,8 @@ System dependencies:
 
 Set up your OpenAI API key:
 ```bash
-export OPENAI_API_KEY="sk-…"
+cp .env.example .env
+# Edit .env to add your API key
 ```
 You can also point the `OPENAI_API_BASE` / `OPENAI_API_KEY` variables to your compatible proxy.
 
@@ -101,7 +99,7 @@ python rename_my_invoices.py
    - Image OCR → `easyocr` (supports English and German)
 
 2. **LLM Processing**
-   - Sends extracted text to GPT-4
+   - Sends extracted text to GPT-4o
    - Extracts date, payment method, amount, and purpose
    - Normalizes fields for consistent naming
 
