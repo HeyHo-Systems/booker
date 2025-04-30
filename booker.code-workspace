@@ -11,6 +11,10 @@
 		{
 			"path": "./rename_my_invoices", 
 			"name": "rename_my_invoices"
+		},
+		{
+			"path": "./collect_my_payout_docs",
+			"name": "collect_my_payout_docs"
 		}
 	],
 	"settings": {
@@ -33,7 +37,8 @@
 		"python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
 		"python.analysis.extraPaths": [
 			"${workspaceFolder}/match_my_statements",
-			"${workspaceFolder}/rename_my_invoices"
+			"${workspaceFolder}/rename_my_invoices",
+			"${workspaceFolder}/collect_my_payout_docs"
 		],
 		"files.associations": {
 			"*.env.example": "dotenv"
@@ -58,6 +63,14 @@
 				"activityBar.foreground": "#fffff0",
 				"statusBar.background": "#744210",
 				"statusBar.foreground": "#fffff0"
+			},
+			"[collect_my_payout_docs]": {
+				"titleBar.activeBackground": "#285e61",
+				"titleBar.activeForeground": "#e6fffa",
+				"activityBar.background": "#285e61",
+				"activityBar.foreground": "#e6fffa",
+				"statusBar.background": "#285e61",
+				"statusBar.foreground": "#e6fffa"
 			}
 		}
 	},
@@ -76,6 +89,14 @@
 				"type": "python",
 				"request": "launch",
 				"program": "${workspaceFolder}/rename_my_invoices/rename_my_invoices.py",
+				"args": ["--dry-run"],
+				"console": "integratedTerminal"
+			},
+			{
+				"name": "Collect My Payout Docs",
+				"type": "python",
+				"request": "launch",
+				"program": "${workspaceFolder}/collect_my_payout_docs/collect_my_payout_docs.py",
 				"args": ["--dry-run"],
 				"console": "integratedTerminal"
 			}
