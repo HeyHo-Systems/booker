@@ -6,7 +6,7 @@ import re
 import sys
 import shutil
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import tempfile
 
 from dotenv import load_dotenv
@@ -41,17 +41,27 @@ def ensure_directories():
 # ---------- LLM function schema ---------------
 FUNCTION_SPEC = {
     "name": "extract_invoice_fields",
-    "description": "Extract bookkeeping metadata from an invoice or receipt.",
+    "description": "Extract bookkeeping metadata from an invoice or receipt. If multiple transactions are found, return an array of transactions.",
     "parameters": {
         "type": "object",
         "properties": {
-            "date":  {"type": "string", "description": "Date of the transaction in YYYY-MM-DD format."},
-            "method":{"type": "string", "description": "Payment method with details. For PayPal extract the FULL email address (e.g. 'quantengoo@gmail.com'). For credit cards or bank transfers include the last 4 digits (e.g. 'visa 1234', 'mastercard 5678', 'sepa DE89'). If no digits available use: visa, mastercard, sepa, cash. If method cannot be determined, use 'unknown'."},
-            "amount":{"type": "string", "description": "Total amount in the invoice including currency (e.g. 123.45 EUR, 50.00 USD)."},
-            "purpose": {"type": "string", "description": "Description with company name if available, followed by short purpose (max 8 chars). Examples: 'vercel_hosting', 'openai_api', 'amazon_books'."}
+            "transactions": {
+                "type": "array",
+                "description": "Array of transactions found in the document. Return a single item if only one transaction found.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "description": "Date of the transaction in YYYY-MM-DD format."},
+                        "method": {"type": "string", "description": "Payment method with details. For PayPal extract the FULL email address (e.g. 'quantengoo@gmail.com'). For credit cards or bank transfers include the last 4 digits (e.g. 'visa 1234', 'mastercard 5678', 'sepa DE89'). If no digits available use: visa, mastercard, sepa, cash. If method cannot be determined, use 'unknown'."},
+                        "amount": {"type": "string", "description": "Total amount in the invoice including currency (e.g. 123.45 EUR, 50.00 USD)."},
+                        "purpose": {"type": "string", "description": "Description with company name if available, followed by short purpose (max 8 chars). Examples: 'vercel_hosting', 'openai_api', 'amazon_books'."}
+                    },
+                    "required": ["date", "method", "amount", "purpose"]
+                }
+            }
         },
-        "required": ["date", "method", "amount", "purpose"]
-    },
+        "required": ["transactions"]
+    }
 }
 
 # -------------- helpers ------------------------
@@ -95,7 +105,7 @@ def get_text_from_file(path: Path) -> str:
         print(f"⚠️  Error type: {type(e).__name__}", file=sys.stderr)
         return ""
 
-def call_llm(prompt: str) -> Optional[Dict[str, str]]:
+def call_llm(prompt: str) -> Optional[List[Dict[str, str]]]:
     try:
         client = OpenAI()
         response = client.chat.completions.create(
@@ -112,7 +122,8 @@ def call_llm(prompt: str) -> Optional[Dict[str, str]]:
             temperature=0.0,
         )
         tool_call = response.choices[0].message.tool_calls[0]
-        return json.loads(tool_call.function.arguments)
+        result = json.loads(tool_call.function.arguments)
+        return result.get("transactions", [])
     except Exception as e:
         print(f"⚠️  LLM extraction failed: {str(e)}", file=sys.stderr)
         print(f"Debug info - API key format: {'sk-...' if os.getenv('OPENAI_API_KEY', '').startswith('sk-') else 'invalid'}", file=sys.stderr)
@@ -187,72 +198,84 @@ def process_file(path: Path, dry_run: bool=False, log_handle=None):
     if not text.strip():
         print(f"⚠️  No text extracted from {path.name}; skipping")
         return
-    fields = call_llm(text)
-    if not fields:
+    transactions = call_llm(text)
+    if not transactions:
         return
-    try:
-        meta = normalise(fields)
-    except ValueError as e:
-        print(f"⚠️  Validation error for {path.name}: {e}")
-        return
-
-    new_name = build_filename(meta, path.suffix.lower())
-    
-    # Determine target directory based on payment method
-    method = meta['method'].lower()
-    if any(m in method for m in ['visa', 'card', 'creditcard', 'unknown', 'mastercard']):
-        target_dir = CREDITCARD_DIR
-    else:
-        target_dir = GIRO_DIR
-    
-    new_path = target_dir / new_name
-    processed_path = PROCESSED_DIR / path.name
-
-    # Handle duplicates by marking them and only moving to processed
-    is_duplicate = new_path.exists()
-    if is_duplicate:
-        # Just move to processed with 'duplicate' marker
-        processed_path = PROCESSED_DIR / f"duplicate_{path.name}"
-        if processed_path.exists():
-            print(f"⚠️  {processed_path.name} already exists in processed directory; skipping")
-            return
-        if not dry_run:
-            try:
-                shutil.move(path, processed_path)
-                print(f"✓ Moved duplicate to {processed_path}")
-            except Exception as e:
-                print(f"⚠️  Error moving duplicate {path.name}: {e}")
-            return
-        else:
-            print(f"[DRY] Would move duplicate {path.name} -> {processed_path}")
-            return
-
-    if dry_run:
-        print(f"[DRY] Would copy {path.name} -> {new_path}")
-    else:
+        
+    for idx, fields in enumerate(transactions):
         try:
-            # First copy to target directory with new name
-            shutil.copy2(path, new_path)
-            # Then move original to processed directory
-            shutil.move(path, processed_path)
-            print(f"✓ Created {target_dir.name}/{new_path.name}")
-            print(f"✓ Moved original to processed/{processed_path.name}")
-        except Exception as e:
-            print(f"⚠️  Error processing {path.name}: {e}")
-            # Cleanup if needed
-            if new_path.exists():
-                new_path.unlink()
-            return
+            meta = normalise(fields)
+        except ValueError as e:
+            print(f"⚠️  Validation error for {path.name} transaction {idx+1}: {e}")
+            continue
 
-    if log_handle:
-        log_handle.write(json.dumps({
-            "original": str(path),
-            "renamed": str(new_path),
-            "processed": str(processed_path),
-            "is_duplicate": is_duplicate,
-            "target_dir": target_dir.name,
-            "fields": meta
-        }) + "\n")
+        new_name = build_filename(meta, path.suffix.lower())
+        
+        # Determine target directory based on payment method
+        method = meta['method'].lower()
+        if any(m in method for m in ['visa', 'card', 'creditcard', 'unknown', 'mastercard']):
+            target_dir = CREDITCARD_DIR
+        else:
+            target_dir = GIRO_DIR
+        
+        new_path = target_dir / new_name
+        
+        # For multiple transactions, we copy the file for each transaction
+        if idx == len(transactions) - 1:
+            # For the last transaction, move the original to processed
+            processed_path = PROCESSED_DIR / path.name
+        else:
+            # For other transactions, just copy
+            processed_path = None
+
+        # Handle duplicates
+        is_duplicate = new_path.exists()
+        if is_duplicate:
+            if processed_path:
+                # Only move to processed if this is the last transaction
+                processed_path = PROCESSED_DIR / f"duplicate_{path.name}"
+                if processed_path.exists():
+                    print(f"⚠️  {processed_path.name} already exists in processed directory; skipping")
+                    return
+                if not dry_run:
+                    try:
+                        shutil.move(path, processed_path)
+                        print(f"✓ Moved duplicate to {processed_path}")
+                    except Exception as e:
+                        print(f"⚠️  Error moving duplicate {path.name}: {e}")
+                else:
+                    print(f"[DRY] Would move duplicate {path.name} -> {processed_path}")
+            continue
+
+        if dry_run:
+            print(f"[DRY] Would {'copy' if idx < len(transactions)-1 else 'move'} {path.name} -> {new_path}")
+        else:
+            try:
+                # Copy file with new name
+                shutil.copy2(path, new_path)
+                print(f"✓ Created {target_dir.name}/{new_path.name}")
+                
+                # Move original to processed only for last transaction
+                if processed_path:
+                    shutil.move(path, processed_path)
+                    print(f"✓ Moved original to processed/{processed_path.name}")
+            except Exception as e:
+                print(f"⚠️  Error processing {path.name}: {e}")
+                # Cleanup if needed
+                if new_path.exists():
+                    new_path.unlink()
+                return
+
+        if log_handle:
+            log_handle.write(json.dumps({
+                "original": str(path),
+                "renamed": str(new_path),
+                "processed": str(processed_path) if processed_path else None,
+                "is_duplicate": is_duplicate,
+                "target_dir": target_dir.name,
+                "fields": meta,
+                "transaction_index": idx
+            }) + "\n")
 
 def main():
     parser = argparse.ArgumentParser(description="Batch‑rename invoice files using OpenAI LLM.")
