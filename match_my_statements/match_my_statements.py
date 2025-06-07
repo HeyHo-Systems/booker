@@ -45,6 +45,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Initialize OpenAI client (uses env vars OPENAI_API_KEY etc.)
 client = OpenAI()
 
@@ -317,7 +320,13 @@ def normalize_merchant_name(name: str) -> str:
         'bp': 'fuel',
         'aral': 'fuel',
         'esso': 'fuel',
-        'total': 'fuel'
+        'total': 'fuel',
+        'star': 'fuel',
+        'orlen': 'fuel',
+        'jet': 'fuel',
+        'avia': 'fuel',
+        'hem': 'fuel',
+        'agip': 'fuel'
     }
     
     words = name.split()
@@ -340,9 +349,14 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     """
     Compare amounts with FX rate tolerance
     Returns a score between 0 and 1
+    Credit card statements often show expenses as negative, so we compare absolute values
     """
+    # Use absolute values for comparison since credit card statements show expenses as negative
+    stmt_abs = abs(stmt_amount)
+    inv_abs = abs(inv_amount)
+    
     # Check for exact match first with a slight tolerance for rounding
-    if abs(stmt_amount - inv_amount) < Decimal('0.10') and inv_currency == 'EUR':
+    if abs(stmt_abs - inv_abs) < Decimal('0.10') and inv_currency == 'EUR':
         return 1.0
         
     if inv_currency != 'EUR':
@@ -351,18 +365,18 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
         min_rate = base_rate * Decimal('0.90')
         max_rate = base_rate * Decimal('1.10')
         
-        min_eur = inv_amount * min_rate
-        max_eur = inv_amount * max_rate
+        min_eur = inv_abs * min_rate
+        max_eur = inv_abs * max_rate
         
         # If statement amount falls within the range, it's a perfect match
-        if min_eur <= stmt_amount <= max_eur:
+        if min_eur <= stmt_abs <= max_eur:
             return 1.0
             
         # Otherwise calculate relative difference using closest value
-        closest = min(abs(stmt_amount - min_eur), abs(stmt_amount - max_eur))
-        rel_diff = closest / max(stmt_amount, max_eur)
+        closest = min(abs(stmt_abs - min_eur), abs(stmt_abs - max_eur))
+        rel_diff = closest / max(stmt_abs, max_eur)
     else:
-        rel_diff = abs(stmt_amount - inv_amount) / max(stmt_amount, inv_amount)
+        rel_diff = abs(stmt_abs - inv_abs) / max(stmt_abs, inv_abs)
     
     # Convert difference to similarity score
     return float(max(0, 1 - min(rel_diff, 1)))
@@ -481,13 +495,32 @@ def match_rows(
                 print("  ✖")
 
             if match and conf >= 0.5:
-                potential_matches.append((i_idx, conf, date_delta))
+                potential_matches.append((i_idx, conf, date_delta, sim))  # Added sim as 4th element
 
-        # If we have multiple matches, pick the one with closest date
+        # If we have multiple matches, prioritize semantic similarity only for very clear matches
         if potential_matches:
-            # Sort by confidence first (-x[1] for descending), then use date as tiebreaker for equal confidences
-            potential_matches.sort(key=lambda x: (-x[1], x[2]))
-            best_idx = potential_matches[0][0]
+            # Check for very high semantic similarity with significant gap
+            high_sim_matches = [m for m in potential_matches if m[3] > 0.6]  # Lowered threshold
+            
+            if high_sim_matches and len(potential_matches) > 1:
+                # Only prioritize semantic similarity if there's a significant gap
+                max_sim = max(m[3] for m in potential_matches)
+                non_high_sim_matches = [m for m in potential_matches if m[3] <= 0.6]
+                max_non_high_sim = max((m[3] for m in non_high_sim_matches), default=0)
+                
+                # Only prioritize if the top semantic match is significantly better than non-semantic matches
+                if max_sim > 0.6 and (max_sim - max_non_high_sim) > 0.1:
+                    high_sim_matches.sort(key=lambda x: (-x[3], -x[1], x[2]))  # -sim, -conf, date
+                    best_idx = high_sim_matches[0][0]
+                else:
+                    # Fall back to original logic (confidence first)
+                    potential_matches.sort(key=lambda x: (-x[1], x[2]))  # -conf, date
+                    best_idx = potential_matches[0][0]
+            else:
+                # For single matches or no high similarity, use original logic
+                potential_matches.sort(key=lambda x: (-x[1], x[2]))  # -conf, date
+                best_idx = potential_matches[0][0]
+                
             matches[s_idx] = best_idx
             used_invoices.add(best_idx)
 
@@ -524,25 +557,34 @@ def generate_markdown_report(
         "|---------------|-------------|--------------|--------------|"
     ]
     
-    # Add matched pairs
+    # Add matched pairs - sorted by statement date
+    matched_pairs = []
     for stmt_idx, inv_idx in matches.items():
         stmt = stmt_rows[stmt_idx]
         inv = inv_rows[inv_idx]
+        matched_pairs.append((stmt['trans_dt'], stmt, inv))
+    
+    # Sort matched pairs by statement date
+    matched_pairs.sort(key=lambda x: x[0])
+    
+    for trans_dt, stmt, inv in matched_pairs:
         lines.append(
-            f"| {stmt['trans_dt'].strftime('%Y-%m-%d')} "
+            f"| {trans_dt.strftime('%Y-%m-%d')} "
             f"| {stmt['descr'][:50]} "
             f"| {stmt['eur']} "
             f"| {Path(inv['path']).name} |"
         )
     
-    # Add unmatched statement rows section
+    # Add unmatched statement rows section - sorted by date
     lines.extend([
         "\n## Unmatched Statement Rows\n",
         "| Date | Description | Amount (EUR) |",
         "|------|-------------|--------------|"
     ])
     
-    for idx in sorted(unmatched_stmt_indices):
+    # Sort unmatched statement rows by date
+    unmatched_stmt_sorted = sorted(unmatched_stmt_indices, key=lambda idx: stmt_rows[idx]['trans_dt'])
+    for idx in unmatched_stmt_sorted:
         stmt = stmt_rows[idx]
         lines.append(
             f"| {stmt['trans_dt'].strftime('%Y-%m-%d')} "
@@ -550,14 +592,16 @@ def generate_markdown_report(
             f"| {stmt['eur']} |"
         )
     
-    # Add unmatched invoice files section
+    # Add unmatched invoice files section - sorted by date
     lines.extend([
         "\n## Unmatched Invoice Files\n",
         "| Date | Amount | Currency | Filename |",
         "|------|---------|----------|-----------|"
     ])
     
-    for idx in sorted(unmatched_inv_indices):
+    # Sort unmatched invoices by date
+    unmatched_inv_sorted = sorted(unmatched_inv_indices, key=lambda idx: inv_rows[idx]['date'])
+    for idx in unmatched_inv_sorted:
         inv = inv_rows[idx]
         lines.append(
             f"| {inv['date'].strftime('%Y-%m-%d')} "

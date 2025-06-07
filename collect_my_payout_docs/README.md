@@ -33,13 +33,13 @@ cp .env.example .env
 The command requires year and month parameters:
 
 ```bash
-python collect_my_payout_docs.py YEAR MONTH
+python3 collect_my_payout_docs.py YEAR MONTH
 ```
 
 For example, to fetch all payout documents for May 2023:
 
 ```bash
-python collect_my_payout_docs.py 2023 5
+python3 collect_my_payout_docs.py 2023 5
 ```
 
 ### Example Output

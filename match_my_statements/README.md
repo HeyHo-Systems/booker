@@ -18,7 +18,7 @@ A smart CLI tool that automatically matches credit card statement entries with c
 
 ```bash
 cd match_my_statements
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -34,13 +34,13 @@ OPENAI_API_KEY=your_api_key_here
 Basic usage:
 
 ```bash
-python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
+python3 match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
 ```
 
 All options:
 
 ```bash
-python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf \
+python3 match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf \
                         --invoices ~/Downloads/booker/creditcard \
                         [--out ~/Downloads/booker/results/April2023_results.json] \
                         [--report ~/Downloads/booker/results/April2023_report.md] \
@@ -62,7 +62,7 @@ Parameters:
 
 Testing mode:
 ```bash
-python match_my_statements.py --test
+python3 match_my_statements.py --test
 ```
 
 ## Input Requirements
@@ -126,7 +126,7 @@ Human-readable summary with:
 2. Ensure invoices are properly renamed using `rename_my_invoices` and stored in ~/Downloads/booker/creditcard/
 3. Run the matching process:
    ```bash
-   python match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
+   python3 match_my_statements.py --statement ~/Downloads/booker/statements/April2023.pdf --invoices ~/Downloads/booker/creditcard
    ```
 4. Review the generated report (~/Downloads/booker/statements/April2023_report.md)
 5. Check unmatched items and address any issues

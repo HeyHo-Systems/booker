@@ -50,7 +50,7 @@ Each tool can be installed independently:
 ```bash
 # For the rename_my_invoices tool
 cd rename_my_invoices
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env      # Edit with your API key
@@ -59,7 +59,7 @@ cp .env.example .env      # Edit with your API key
 ```bash
 # For the match_my_statements tool
 cd match_my_statements
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env      # Edit with your API key

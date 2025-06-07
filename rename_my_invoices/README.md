@@ -4,12 +4,17 @@ A Python utility that processes invoices and receipts (PDF/images), extracts key
 
 ## 1. Install
 
-Create a fresh environment:
+Create a fresh environment and install dependencies:
 ```bash
 cd rename_my_invoices
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+**Important:** Always activate the virtual environment before running the script:
+```bash
+source venv/bin/activate  # Do this every time before running the script
 ```
 
 System dependencies:
@@ -74,14 +79,19 @@ Components:
 
 ## 5. Usage
 
+**Always activate the virtual environment first:**
+```bash
+source venv/bin/activate
+```
+
 Try a dry run first:
 ```bash
-python rename_my_invoices.py --dry-run
+python3 rename_my_invoices.py --dry-run
 ```
 
 If the output looks good, process the files:
 ```bash
-python rename_my_invoices.py
+python3 rename_my_invoices.py
 ```
 
 ### Options
@@ -129,5 +139,34 @@ When a file would create a duplicate in the target directory:
 - Original stays in place
 - New file is moved to processed/ with "duplicate_" prefix
 - Both actions are logged
+
+## 8. Troubleshooting
+
+### ModuleNotFoundError: No module named 'dotenv'
+
+This error occurs when you run the script without activating the virtual environment or when dependencies aren't installed. Fix it by:
+
+1. **Activate the virtual environment:**
+   ```bash
+   cd rename_my_invoices
+   source venv/bin/activate
+   ```
+
+2. **Install dependencies if not already done:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Always run the script with the virtual environment active:**
+   ```bash
+   source venv/bin/activate
+   python3 rename_my_invoices.py --dry-run
+   ```
+
+### Other Common Issues
+
+- **Text extraction fails:** Make sure you have `poppler` installed for PDF processing
+- **OCR not working:** Verify `easyocr` installation completed successfully
+- **API errors:** Check your OpenAI API key in the `.env` file
 
 Happy organizing!
