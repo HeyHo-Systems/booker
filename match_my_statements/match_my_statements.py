@@ -100,6 +100,7 @@ def load_fx_rate(usd_date: date, cache_path: Optional[Path]) -> Decimal:
         return rate
     except Exception:
         # Fallback to 1.0 to avoid crashing; will harm matching accuracy.
+        warnings.warn(f"FX fetch failed for {key}; using 1.0 USD→EUR")
         return Decimal("1")
 
 
@@ -349,35 +350,33 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     """
     Compare amounts with FX rate tolerance
     Returns a score between 0 and 1
-    Credit card statements often show expenses as negative, so we compare absolute values
+    Credit card statements often show expenses as negative, so we compare absolute values.
+    For EUR invoices, require near-exact equality (≤ €0.10); otherwise score 0.0.
     """
     # Use absolute values for comparison since credit card statements show expenses as negative
     stmt_abs = abs(stmt_amount)
     inv_abs = abs(inv_amount)
-    
-    # Check for exact match first with a slight tolerance for rounding
-    if abs(stmt_abs - inv_abs) < Decimal('0.10') and inv_currency == 'EUR':
+
+    # Strict rule for EUR invoices: near-exact match only
+    if inv_currency == 'EUR':
+        return 1.0 if abs(stmt_abs - inv_abs) <= Decimal('0.10') else 0.0
+
+    # Non-EUR invoices: allow FX tolerance ±10%
+    base_rate = fx_rate
+    min_rate = base_rate * Decimal('0.90')
+    max_rate = base_rate * Decimal('1.10')
+
+    min_eur = inv_abs * min_rate
+    max_eur = inv_abs * max_rate
+
+    # If statement amount falls within the range, it's a perfect match
+    if min_eur <= stmt_abs <= max_eur:
         return 1.0
-        
-    if inv_currency != 'EUR':
-        # Allow for FX rate variations of ±10%
-        base_rate = fx_rate
-        min_rate = base_rate * Decimal('0.90')
-        max_rate = base_rate * Decimal('1.10')
-        
-        min_eur = inv_abs * min_rate
-        max_eur = inv_abs * max_rate
-        
-        # If statement amount falls within the range, it's a perfect match
-        if min_eur <= stmt_abs <= max_eur:
-            return 1.0
-            
-        # Otherwise calculate relative difference using closest value
-        closest = min(abs(stmt_abs - min_eur), abs(stmt_abs - max_eur))
-        rel_diff = closest / max(stmt_abs, max_eur)
-    else:
-        rel_diff = abs(stmt_abs - inv_abs) / max(stmt_abs, inv_abs)
-    
+
+    # Otherwise calculate relative difference using closest value
+    closest = min(abs(stmt_abs - min_eur), abs(stmt_abs - max_eur))
+    rel_diff = closest / max(stmt_abs, max_eur)
+
     # Convert difference to similarity score
     return float(max(0, 1 - min(rel_diff, 1)))
 
@@ -456,6 +455,12 @@ def match_rows(
             except Exception:
                 amt_score = 0.0
             
+            # Enforce a minimal name similarity for non-EUR to avoid FX-driven false positives
+            if inv["ccy"] != 'EUR' and sim < 0.30:
+                if debug:
+                    print(f"   → Candidate {inv['path'].name:<40} sim={sim:.2f} dateΔ={date_delta}d amtΔ={(1-0):.2%} heuristic=--  ✖ (sim floor)")
+                continue
+
             # Perfect matches on date and amount should boost the overall score
             perfect_match = date_delta == 0 and amt_score > 0.95
             
