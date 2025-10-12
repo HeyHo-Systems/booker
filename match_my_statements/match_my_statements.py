@@ -99,9 +99,9 @@ def load_fx_rate(usd_date: date, cache_path: Optional[Path]) -> Decimal:
         cache_path.write_text(json.dumps(cache, indent=2))
         return rate
     except Exception:
-        # Fallback to 1.0 to avoid crashing; will harm matching accuracy.
-        warnings.warn(f"FX fetch failed for {key}; using 1.0 USD→EUR")
-        return Decimal("1")
+        # Fallback to 0.85 to avoid crashing; will affect matching accuracy.
+        warnings.warn(f"FX fetch failed for {key}; using 0.85 USD→EUR")
+        return Decimal("0.85")
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
