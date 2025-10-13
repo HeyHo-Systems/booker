@@ -55,8 +55,8 @@ client = OpenAI()
 # Configuration
 # -----------------------------------------------------------------------------
 INVOICE_RX = re.compile(
-    r"(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<method>[a-z0-9_]+)_(?P<amount>\d+\.\d{2})"
-    r"(?P<ccy>[A-Z]{3})_(?P<slug>.+)"
+    r"(?P<date>\d{2}\.\d{2}\.\d{2})[_-](?P<method>[a-z0-9_]+)[_-](?P<amount>\d+(?:\.\d{2})?)"
+    r"(?P<ccy>[A-Z]{3})[_-](?P<slug>.+)"
 )
 EMBED_MODEL = "text-embedding-3-small"
 
@@ -116,6 +116,7 @@ def load_invoices(folder: Path) -> List[Dict]:
     for p in folder.glob("*.[pP][dDnN][fFgG]"):  # Match both .pdf and .png (case insensitive)
         m = INVOICE_RX.match(p.stem)
         if not m:
+            warnings.warn(f"Skipping file with unexpected name format: {p.name}")
             continue
         d = m.groupdict()
         rows.append(
