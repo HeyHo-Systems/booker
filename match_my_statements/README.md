@@ -116,7 +116,7 @@ Human-readable summary with:
 5. **Matching**: Compares entries using:
    - Semantic similarity (cosine similarity of vectors)
    - Date proximity (closer dates score higher)
-   - Amount similarity (with currency conversion when needed)
+   - Amount similarity (with currency conversion when needed). For non-EUR invoices, a strict ±10% FX band is used; values outside this band are treated as non-matches to avoid risky pairings.
 6. **Verification**: Uses GPT to verify ambiguous matches
 7. **Report Generation**: Creates JSON data and markdown report
 
@@ -150,5 +150,5 @@ Human-readable summary with:
 
 - Only works with Hanseatic Bank statement layout
 - Requires OpenAI API access for embeddings and verification
-- FX conversion uses daily rates, may not match exact bank rates
+- FX conversion uses daily rates (or a fixed fallback when FX API is unavailable) and a strict ±10% band for non-EUR amounts, so some ambiguous foreign-currency transactions may remain unmatched rather than risk a wrong match
 - Limited to transactions using 4-digit card suffix "9174" 

@@ -362,7 +362,7 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     if inv_currency == 'EUR':
         return 1.0 if abs(stmt_abs - inv_abs) <= Decimal('0.10') else 0.0
 
-    # Non-EUR invoices: allow FX tolerance ±10%
+    # Non-EUR invoices: allow FX tolerance ±10% with a hard band
     base_rate = fx_rate
     min_rate = base_rate * Decimal('0.90')
     max_rate = base_rate * Decimal('1.10')
@@ -374,12 +374,8 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     if min_eur <= stmt_abs <= max_eur:
         return 1.0
 
-    # Otherwise calculate relative difference using closest value
-    closest = min(abs(stmt_abs - min_eur), abs(stmt_abs - max_eur))
-    rel_diff = closest / max(stmt_abs, max_eur)
-
-    # Convert difference to similarity score
-    return float(max(0, 1 - min(rel_diff, 1)))
+    # Outside the FX band we consider the amount a non-match
+    return 0.0
 
 def match_rows(
     stmt_rows: List[Dict],
