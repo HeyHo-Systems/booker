@@ -64,6 +64,7 @@ EMBED_MODEL = "text-embedding-3-small"
 # Can be overridden via environment variable MATCH_MY_STATEMENTS_FX_USD_EUR.
 FX_ENV_VAR = "MATCH_MY_STATEMENTS_FX_USD_EUR"
 FX_DEFAULT_RATE = Decimal("0.85")
+NON_EUR_AMOUNT_TOLERANCE_EUR = Decimal("1.00")
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -368,20 +369,10 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
     if inv_currency == 'EUR':
         return 1.0 if abs(stmt_abs - inv_abs) <= Decimal('0.10') else 0.0
 
-    # Non-EUR invoices: allow FX tolerance ±10% with a hard band
-    base_rate = fx_rate
-    min_rate = base_rate * Decimal('0.90')
-    max_rate = base_rate * Decimal('1.10')
-
-    min_eur = inv_abs * min_rate
-    max_eur = inv_abs * max_rate
-
-    # If statement amount falls within the range, it's a perfect match
-    if min_eur <= stmt_abs <= max_eur:
-        return 1.0
-
-    # Outside the FX band we consider the amount a non-match
-    return 0.0
+    # Non-EUR invoices: compare against fixed FX with an absolute EUR tolerance
+    target_eur = inv_abs * fx_rate
+    diff = abs(stmt_abs - target_eur)
+    return 1.0 if diff <= NON_EUR_AMOUNT_TOLERANCE_EUR else 0.0
 
 def match_rows(
     stmt_rows: List[Dict],
@@ -434,6 +425,31 @@ def match_rows(
             print(f"\n🔎 Statement row {s_idx}: \"{s['descr'][:60]}…\" "
                   f"EUR {s['eur']}  ({s['trans_dt']})")
         
+        # -------------------------------------------------------------------------
+        # 1. Golden Rule: Explicitly check for Exact EUR Matches
+        # -------------------------------------------------------------------------
+        golden_matches = []
+        for i_idx in top_idx:
+            if i_idx in used_invoices:
+                continue
+            inv = inv_rows[i_idx]
+            # Check strictly for EUR and exact amount (≤ 0.01)
+            if inv["ccy"] == "EUR":
+                diff = abs(abs(s["eur"]) - abs(inv["amount"]))
+                if diff <= Decimal("0.01"):
+                    date_delta = abs((s["trans_dt"] - inv["date"]).days)
+                    golden_matches.append((i_idx, date_delta))
+
+        if golden_matches:
+            # Sort by date proximity (smallest delta first)
+            golden_matches.sort(key=lambda x: x[1])
+            best_idx, d_delta = golden_matches[0]
+            matches[s_idx] = best_idx
+            used_invoices.add(best_idx)
+            if debug:
+                print(f"   → 🏆 Golden Rule Match (EUR exact): {inv_rows[best_idx]['path'].name} (dateΔ={d_delta}d)")
+            continue
+        
         # Store all potential matches for this statement row
         potential_matches = []
         
@@ -458,6 +474,12 @@ def match_rows(
                 )
             except Exception:
                 amt_score = 0.0
+
+            # Detect clearly identical merchants to bias toward amount
+            stmt_tokens = set(s["slug"].split())
+            inv_tokens = set(inv["slug"].split())
+            shared_tokens = stmt_tokens & inv_tokens
+            same_merchant_strong = sim >= 0.7 and bool(shared_tokens)
             
             # Enforce a minimal name similarity for non-EUR to avoid FX-driven false positives
             if inv["ccy"] != 'EUR' and sim < 0.30:
@@ -468,9 +490,11 @@ def match_rows(
             # Perfect matches on date and amount should boost the overall score
             perfect_match = date_delta == 0 and amt_score > 0.95
             
-            # Adjust weights based on similarity and perfect matches
+            # Adjust weights based on similarity, amount, and perfect matches
             if perfect_match:  # Perfect date and amount - be more lenient on name
                 heuristic = 0.3 * sim + 0.5 * amt_score + 0.2 * date_score + 0.2  # Bonus for perfect match
+            elif same_merchant_strong:  # Clearly same merchant: emphasize amount
+                heuristic = 0.2 * sim + 0.6 * amt_score + 0.2 * date_score
             elif sim > 0.6:  # High name similarity - be more lenient on other factors
                 heuristic = 0.6 * sim + 0.25 * amt_score + 0.15 * date_score
             else:  # Normal weighting with more weight on amount
@@ -504,32 +528,20 @@ def match_rows(
                 print("  ✖")
 
             if match and conf >= 0.5:
+                # For clearly same merchants with non-EUR invoices, only keep
+                # candidates whose amounts actually match under the FX tolerance.
+                if same_merchant_strong and inv["ccy"] != "EUR" and amt_score <= 0.0:
+                    if debug:
+                        print("  (dropped: same merchant but amount outside FX tolerance)")
+                    continue
                 potential_matches.append((i_idx, conf, date_delta, sim))  # Added sim as 4th element
 
-        # If we have multiple matches, prioritize semantic similarity only for very clear matches
+        # If we have multiple matches, prioritize by confidence, then date
         if potential_matches:
-            # Check for very high semantic similarity with significant gap
-            high_sim_matches = [m for m in potential_matches if m[3] > 0.6]  # Lowered threshold
+            # Sort by -conf, then date
+            potential_matches.sort(key=lambda x: (-x[1], x[2]))
+            best_idx = potential_matches[0][0]
             
-            if high_sim_matches and len(potential_matches) > 1:
-                # Only prioritize semantic similarity if there's a significant gap
-                max_sim = max(m[3] for m in potential_matches)
-                non_high_sim_matches = [m for m in potential_matches if m[3] <= 0.6]
-                max_non_high_sim = max((m[3] for m in non_high_sim_matches), default=0)
-                
-                # Only prioritize if the top semantic match is significantly better than non-semantic matches
-                if max_sim > 0.6 and (max_sim - max_non_high_sim) > 0.1:
-                    high_sim_matches.sort(key=lambda x: (-x[3], -x[1], x[2]))  # -sim, -conf, date
-                    best_idx = high_sim_matches[0][0]
-                else:
-                    # Fall back to original logic (confidence first)
-                    potential_matches.sort(key=lambda x: (-x[1], x[2]))  # -conf, date
-                    best_idx = potential_matches[0][0]
-            else:
-                # For single matches or no high similarity, use original logic
-                potential_matches.sort(key=lambda x: (-x[1], x[2]))  # -conf, date
-                best_idx = potential_matches[0][0]
-                
             matches[s_idx] = best_idx
             used_invoices.add(best_idx)
 
