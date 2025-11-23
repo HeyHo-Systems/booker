@@ -44,7 +44,6 @@ python3 match_my_statements.py --statement ~/Downloads/booker/statements/April20
                         --invoices ~/Downloads/booker/creditcard \
                         [--out ~/Downloads/booker/results/April2023_results.json] \
                         [--report ~/Downloads/booker/results/April2023_report.md] \
-                        [--fx-cache ~/.fx_rates.json] \
                         [--threshold 0.6] \
                         [--dry-run] \
                         [--debug]
@@ -55,7 +54,6 @@ Parameters:
 - `--invoices`: Directory containing renamed invoice files (usually ~/Downloads/booker/creditcard)
 - `--out`: Custom path for JSON output (default: StatementName_results.json)
 - `--report`: Custom path for markdown report (default: StatementName_report.md) 
-- `--fx-cache`: Path to store/load FX rate data (default: .fx_rates.json)
 - `--threshold`: Matching confidence threshold (default: 0.6)
 - `--dry-run`: Run without saving any output files
 - `--debug`: Enable verbose debugging output during matching

@@ -40,7 +40,6 @@ from typing import List, Dict, Tuple, Optional, Set
 
 import numpy as np
 import pdfplumber
-import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
@@ -60,6 +59,12 @@ INVOICE_RX = re.compile(
 )
 EMBED_MODEL = "text-embedding-3-small"
 
+# Fixed FX configuration (no external API)
+# USD→EUR rate used for all non-EUR invoices.
+# Can be overridden via environment variable MATCH_MY_STATEMENTS_FX_USD_EUR.
+FX_ENV_VAR = "MATCH_MY_STATEMENTS_FX_USD_EUR"
+FX_DEFAULT_RATE = Decimal("0.85")
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
@@ -78,30 +83,31 @@ def parse_date_de(val: str) -> Optional[date]:
         return None
 
 
-def load_fx_rate(usd_date: date, cache_path: Optional[Path]) -> Decimal:
+def load_fx_rate(usd_date: date, cache_path: Optional[Path], debug: bool = False) -> Decimal:
     """
-    Returns the USD→EUR mid‑market rate for the given date.
-    Uses exchangerate.host and caches daily results in JSON.
+    Return a fixed USD→EUR rate, configurable via environment.
+
+    - Reads the rate from MATCH_MY_STATEMENTS_FX_USD_EUR (e.g. "0.92").
+    - Falls back to 0.85 if the variable is missing or invalid.
+    - Does not perform any network requests or caching.
+
+    The usd_date and cache_path parameters are kept for backwards
+    compatibility but are ignored.
     """
-    if not cache_path:
-        cache_path = Path(".fx_cache.json")
-    cache = {}
-    if cache_path.exists():
-        cache = json.loads(cache_path.read_text())
-    key = usd_date.isoformat()
-    if key in cache:
-        return Decimal(str(cache[key]))
-    url = f"https://api.exchangerate.host/{key}?base=USD&symbols=EUR"
+    val = os.getenv(FX_ENV_VAR)
+
+    if not val:
+        if debug:
+            print(f"[FX] {FX_ENV_VAR} not set; using default {FX_DEFAULT_RATE} USD→EUR")
+        return FX_DEFAULT_RATE
+
     try:
-        res = requests.get(url, timeout=10).json()
-        rate = Decimal(str(res["rates"]["EUR"]))
-        cache[key] = str(rate)
-        cache_path.write_text(json.dumps(cache, indent=2))
-        return rate
-    except Exception:
-        # Fallback to 0.85 to avoid crashing; will affect matching accuracy.
-        warnings.warn(f"FX fetch failed for {key}; using 0.85 USD→EUR")
-        return Decimal("0.85")
+        return Decimal(val)
+    except InvalidOperation:
+        warnings.warn(
+            f"Invalid {FX_ENV_VAR}='{val}'; using default {FX_DEFAULT_RATE} USD→EUR"
+        )
+        return FX_DEFAULT_RATE
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -380,7 +386,6 @@ def amount_similarity(stmt_amount: Decimal, inv_amount: Decimal, inv_currency: s
 def match_rows(
     stmt_rows: List[Dict],
     inv_rows: List[Dict],
-    fx_cache: Path,
     threshold: float = 0.5,
     debug: bool = False,
 ) -> Dict[int, int]:
@@ -443,11 +448,13 @@ def match_rows(
             date_score = 1 - min(date_delta, 14) / 14
             
             try:
+                # Use a fixed, configurable FX rate for non-EUR amounts
+                fx_rate = load_fx_rate(s.get("trans_dt") or inv["date"], None, debug=debug)
                 amt_score = amount_similarity(
-                    s["eur"], 
-                    inv["amount"], 
+                    s["eur"],
+                    inv["amount"],
                     inv["ccy"],
-                    load_fx_rate(inv["date"], fx_cache)
+                    fx_rate,
                 )
             except Exception:
                 amt_score = 0.0
@@ -632,7 +639,6 @@ def main():
     parser.add_argument("--invoices", type=Path, required=False, help="Path to invoices directory")
     parser.add_argument("--out", type=Path, required=False, help="Path for JSON output (optional, defaults to statement_name_results.json)")
     parser.add_argument("--report", type=Path, required=False, help="Path for markdown report output (optional, defaults to statement_name_report.md)")
-    parser.add_argument("--fx-cache", type=Path, default=Path(".fx_rates.json"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--threshold", type=float, default=0.6)
     parser.add_argument("--debug", action="store_true", help="Verbose matching output")
@@ -753,7 +759,7 @@ def main():
         sys.exit("Nothing to match; aborting.")
 
     print("🔍 Matching …")
-    matches = match_rows(stmt_rows, inv_rows, args.fx_cache, threshold=args.threshold, debug=args.debug)
+    matches = match_rows(stmt_rows, inv_rows, threshold=args.threshold, debug=args.debug)
     print(f"   matched {len(matches)}/{len(stmt_rows)} rows")
     
     if not args.dry_run:
