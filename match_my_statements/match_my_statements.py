@@ -487,6 +487,20 @@ def match_rows(
                     print(f"   → Candidate {inv['path'].name:<40} sim={sim:.2f} dateΔ={date_delta}d amtΔ={(1-0):.2%} heuristic=--  ✖ (sim floor)")
                 continue
 
+            # Penalize future invoices (allowing 1 day buffer for timezone diffs)
+            # Invoices typically come before or on the day of the charge.
+            future_days = (inv["date"] - s["trans_dt"]).days
+            # Hard block for invoices significantly in the future (>3 days)
+            # This prevents a Sept 26 charge from matching an Oct 7 invoice.
+            if future_days > 3:
+                if debug:
+                    print(f"   → Candidate {inv['path'].name:<40} sim={sim:.2f} dateΔ={future_days}d (future) ✖ (future date block)")
+                continue
+            
+            future_penalty = 0.0
+            if future_days > 1:
+                future_penalty = 0.25
+
             # Perfect matches on date and amount should boost the overall score
             perfect_match = date_delta == 0 and amt_score > 0.95
             
@@ -499,6 +513,9 @@ def match_rows(
                 heuristic = 0.6 * sim + 0.25 * amt_score + 0.15 * date_score
             else:  # Normal weighting with more weight on amount
                 heuristic = 0.4 * sim + 0.4 * amt_score + 0.2 * date_score
+            
+            # Apply future date penalty
+            heuristic -= future_penalty
 
             if debug:
                 print(f"   → Candidate {inv['path'].name:<40} "
